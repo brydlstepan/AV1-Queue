@@ -1,0 +1,7 @@
+# agent-kit:begin
+/.claude/skills
+/.agents/agent-kit.local.json
+.env
+.env.*
+!.env.example
+# agent-kit:end
