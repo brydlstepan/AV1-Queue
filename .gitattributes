@@ -1,0 +1,26 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Keep Windows launcher scripts with CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Source / config as LF
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Binaries (in case any are ever tracked)
+*.exe binary
+*.dll binary
+*.pyd binary
+*.so binary
+*.zip binary
+*.7z binary
+*.mkv binary
+*.mp4 binary
+*.ivf binary

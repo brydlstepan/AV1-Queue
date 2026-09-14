@@ -1,0 +1,22 @@
+{
+  "id": "balanced",
+  "name": "4K (HQ)",
+  "description": "",
+  "crf": 32.0,
+  "preset": 3,
+  "resolution_target": "2160p",
+  "audio_bitrate_51": "320k",
+  "audio_bitrate_stereo": "160k",
+  "audio_languages": null,
+  "audio_best_only": true,
+  "svt_params": {
+    "adaptive-film-grain": 1,
+    "tx-bias": 2,
+    "complex-hvs": 1,
+    "film-grain": 10,
+    "qm-min": 4,
+    "qm-max": 14,
+    "noise": 8,
+    "tune": 5
+  }
+}
