@@ -1,0 +1,101 @@
+# --- Runtime / local state ---
+_temp/
+history/
+logs/
+server/queue.json
+server/queue.json.tmp
+server/queue.json.corrupt
+queue.json
+*.partial
+*.partial.mp4
+*.partial.webm
+*.injecting
+
+# --- Downloaded by scripts/setup_env.py ---
+bin/*
+vs/
+
+# SVT-AV1-Tritium build variants ARE committed, so a fresh clone has a
+# working encoder without depending on setup_env.py's GitHub Release fetch.
+# (A parent dir excluded via bin/* must be re-included at every level for a
+# nested negation to take effect — git won't descend into an ignored dir.)
+!bin/svt/
+bin/svt/*
+!bin/svt/*.exe
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# --- Virtual envs (if created outside vs/) ---
+.venv/
+venv/
+env/
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+server/settings.json
+settings.json
+
+# Local-only presets (UI-created); builtin/ stays tracked
+server/presets/local/*
+!server/presets/local/.gitkeep
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+ehthumbs.db
+
+# --- Archives / install leftovers ---
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+
+# --- Media / encode outputs (never commit) ---
+*.mkv
+*.mp4
+*.ivf
+*.m2ts
+*.ts
+*.webm
+*.mov
+*.avi
+*.opus
+*.ac3
+*.eac3
+*.flac
+*.wav
+*.ass
+*.srt
+*.sup
+*.vpy
+*.zones
+*.log
+!server/static/**

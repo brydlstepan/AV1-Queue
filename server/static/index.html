@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AV1 Queue</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=pass17">
+</head>
+<body>
+  <div class="app-container">
+    <main class="workspace-layout">
+      <!-- Left: Brand / Presets / Pipeline / Stats -->
+      <aside class="sidebar-section">
+        <div class="logo-badge">
+          <span class="logo-icon">⚡</span>
+          <span class="logo-title">AV1 Queue</span>
+        </div>
+
+        <section class="sidebar-block sidebar-block--presets">
+          <div class="sidebar-heading">
+            <h3>Presets</h3>
+          </div>
+          <div class="preset-selector scroll-thin" id="presetListContainer">
+            <!-- Dynamically populated from API -->
+          </div>
+          <button class="btn btn-sm btn-outline btn-new-preset" id="btnNewPreset">+ New Preset</button>
+        </section>
+
+        <section class="sidebar-block sidebar-block--pipeline">
+          <div class="sidebar-heading">
+            <h3>Pipeline</h3>
+          </div>
+          <div class="output-specs">
+            <div class="spec-row">
+              <span class="spec-key">Format:</span>
+              <span class="spec-val" id="pipelineFormatVal">MP4</span>
+            </div>
+            <div class="spec-row">
+              <span class="spec-key">Video Codec:</span>
+              <span class="spec-val">AV1 (SVT-AV1-Tritium)</span>
+            </div>
+            <div class="spec-row">
+              <span class="spec-key">GPU Acceleration:</span>
+              <span class="spec-val highlight-val">RTX 4070 Ti (CUDA)</span>
+            </div>
+            <div class="spec-row">
+              <span class="spec-key">CPU Cores:</span>
+              <span class="spec-val" id="pipelineCpuCores">—</span>
+            </div>
+          </div>
+          <div class="system-gauges">
+            <div class="gauge-card" id="cpuGauge">
+              <div class="gauge-label">CPU</div>
+              <div class="gauge-val" id="cpuVal">0%</div>
+              <div class="gauge-bar-track"><div class="gauge-bar-fill" id="cpuBar"></div></div>
+            </div>
+            <div class="gauge-card" id="gpuGauge">
+              <div class="gauge-label">GPU</div>
+              <div class="gauge-val" id="gpuVal">0%</div>
+              <div class="gauge-bar-track"><div class="gauge-bar-fill gpu-fill" id="gpuBar"></div></div>
+            </div>
+            <div class="gauge-card" id="ramGauge">
+              <div class="gauge-label">RAM</div>
+              <div class="gauge-val" id="ramVal">0 GB</div>
+              <div class="gauge-bar-track"><div class="gauge-bar-fill ram-fill" id="ramBar"></div></div>
+            </div>
+          </div>
+          <button type="button" class="btn btn-outline btn-sm" id="btnPipelineSettings" style="margin-top: 14px; width: 100%;">
+            Settings
+          </button>
+        </section>
+      </aside>
+
+      <!-- Right: Active Queue OR Finished Screen -->
+      <section class="queue-section">
+        <!-- Active Job Card (always visible; idle when not encoding) -->
+        <div class="active-job-container is-idle" id="activeJobSection">
+          <div class="card active-job-card" id="activeJobCard">
+            <div class="active-header">
+              <div class="active-info">
+                <h3 class="active-title" id="activeFileName">No active encode</h3>
+              </div>
+              <div class="active-metrics">
+                <div class="metric-box">
+                  <span class="m-lbl">FPS:</span>
+                  <span class="m-val" id="activeFps">—</span>
+                </div>
+                <div class="metric-box">
+                  <span class="m-lbl">Elapsed:</span>
+                  <span class="m-val" id="activeElapsed">00:00:00</span>
+                </div>
+                <div class="metric-box">
+                  <span class="m-lbl">Remaining:</span>
+                  <span class="m-val" id="activeRemaining">—</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3-Stage Visual Stepper (single direct-pass encode, no boosting sub-stages) -->
+            <div class="stepper-wrapper">
+              <div class="step-node" id="step1">
+                <div class="step-circle">1</div>
+                <div class="step-lbl">Audio & HDR</div>
+              </div>
+              <div class="step-line" id="line1"></div>
+              <div class="step-node" id="step2">
+                <div class="step-circle">2</div>
+                <div class="step-lbl">Encoding</div>
+              </div>
+              <div class="step-line" id="line2"></div>
+              <div class="step-node" id="step3">
+                <div class="step-circle">3</div>
+                <div class="step-lbl" id="stepMuxLabel">Finalize</div>
+              </div>
+            </div>
+
+            <!-- Big Progress Bar -->
+            <div class="progress-container">
+              <div class="progress-labels">
+                <span class="progress-stage-text" id="activeStageText">Waiting for queue…</span>
+                <span class="progress-pct" id="activePct">0%</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" id="activeProgressFill" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <!-- Live Terminal Drawer Toggle -->
+            <div class="terminal-toggle-row">
+              <button class="btn-text" id="btnToggleTerminal">
+                Terminal <span class="caret">▼</span>
+              </button>
+            </div>
+            <div class="terminal-box collapsed scroll-thin" id="terminalBox">
+              <div class="terminal-logs" id="terminalLogs"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card queue-panel-card">
+          <div class="queue-view-tabs nav-tabs">
+            <button class="tab-btn active" id="tabQueue">
+              <span>Active Queue</span>
+              <span class="tab-badge" id="tabQueueBadge">0</span>
+            </button>
+            <button class="tab-btn" id="tabHistory">
+              <span>Finished Encodes</span>
+              <span class="tab-badge" id="tabHistoryBadge">0</span>
+            </button>
+          </div>
+
+          <!-- VIEW 1: Active Queue View -->
+          <div id="viewQueue" class="view-container">
+            <div class="queue-header-bar">
+              <div class="queue-title-group">
+                <h2>Pending Queue</h2>
+                <span class="queue-count-badge" id="queueCountBadge">0 Jobs</span>
+              </div>
+              <div class="queue-header-actions">
+                <div class="drop-zone" id="dropZone" title="Click or drop video files (MKV, MP4, TS, M2TS)">
+                  <span class="drop-label">Add video files</span>
+                </div>
+                <div class="test-mode-control" id="testModeControl">
+                  <button type="button" class="test-mode-switch" id="btnTestModeToggle" role="switch" aria-checked="false" title="Toggle Test Mode">
+                    <span class="test-mode-switch-label">Test Mode</span>
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                  </button>
+                  <button type="button" class="test-mode-gear" id="btnTestModeSettings" title="Test Mode settings" aria-label="Test Mode settings">⚙</button>
+                </div>
+                <button class="btn btn-primary btn-sm" id="btnStartQueue" disabled>
+                  <span>▶</span> Start Queue
+                </button>
+                <button class="btn btn-warning btn-sm hidden" id="btnPauseQueue">
+                  <span>⏸</span> Pause
+                </button>
+                <button class="btn btn-danger btn-sm hidden" id="btnStopQueue">
+                  <span>⏹</span> Stop
+                </button>
+              </div>
+            </div>
+            <div class="queue-list" id="queueList"></div>
+          </div>
+
+          <!-- VIEW 2: Finished Encodes View -->
+          <div id="viewHistory" class="view-container hidden">
+            <div class="queue-header-bar">
+              <div class="queue-title-group">
+                <h2>Completed Encodes</h2>
+                <span class="queue-count-badge" id="historyCountBadge">0 Finished</span>
+              </div>
+              <div class="queue-header-actions">
+                <button class="btn btn-sm btn-outline" id="btnClearHistory">Clear All History</button>
+              </div>
+            </div>
+            <div class="history-list" id="historyList"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- File Browser & Track Inspector Modal -->
+    <div class="modal-backdrop hidden" id="browseModal">
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3>File & Track Inspector</h3>
+          <button class="modal-close" id="btnCloseModal">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="browser-chrome" id="browserChrome">
+            <div class="browser-nav">
+              <button class="btn btn-sm btn-outline" id="btnBrowserUp">⬆ Up</button>
+              <button class="btn btn-sm btn-secondary" id="btnOpenNativeFromModal">Windows File Dialog</button>
+              <div class="current-path-display" id="browserCurrentPath">This PC</div>
+            </div>
+            <div class="browser-items-list" id="browserItemsList"></div>
+          </div>
+
+          <!-- Selected File Inspector Panel -->
+          <div class="inspector-panel hidden" id="inspectorPanel">
+            <h4 class="inspector-title" id="inspFileName">Selected File</h4>
+            <div class="insp-video-meta" id="inspVideoMeta"></div>
+
+            <div class="form-group insp-preset-group">
+              <label>Quality Preset for this file</label>
+              <select id="inspPresetSelect" class="form-input">
+                <!-- Populated dynamically -->
+              </select>
+            </div>
+
+            <div class="insp-section-title">Audio Tracks</div>
+            <p class="insp-section-hint" id="inspAudioHint">Auto-select: Best tracks selected.</p>
+            <div class="insp-tracks-list scroll-thin" id="inspAudioTracks"></div>
+
+            <div class="modal-actions-row">
+              <button class="btn btn-primary" id="btnConfirmAddJob">Add to Queue</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preset Editor Modal -->
+    <div class="modal-backdrop hidden" id="presetModal">
+      <div class="modal-window modal-window-scrollable">
+        <div class="modal-header">
+          <h3 id="presetModalTitle">Edit Preset</h3>
+          <button class="modal-close" id="btnClosePresetModal">✕</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="pEditId">
+          <div class="preset-sticky-header">
+            <div class="setting-row">
+              <label class="setting-label" for="pEditName">
+                <span class="setting-label-text">Preset Name</span>
+              </label>
+              <span class="setting-reset-spacer" aria-hidden="true"></span>
+              <div class="setting-control">
+                <input type="text" id="pEditName" class="form-input" placeholder="e.g. Anime Archival">
+              </div>
+            </div>
+            <div class="setting-row is-default" data-basic-key="isDefault">
+              <label class="setting-label" for="pEditIsDefault">
+                <span class="setting-label-text">Set as default preset</span>
+              </label>
+              <button type="button" class="btn-reset-default basic-reset" data-target="pEditIsDefault" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+              <div class="setting-control">
+                <button type="button" class="svt-toggle basic-toggle" id="pEditIsDefault" role="switch" aria-checked="false" data-default="false">
+                  <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                  <span class="svt-toggle-label">Off</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="preset-header-spacer" aria-hidden="true"></div>
+          <div class="preset-section-tabs">
+            <button type="button" class="tab-btn active" id="presetTabBasic">Basic</button>
+            <button type="button" class="tab-btn" id="presetTabAudio">Audio</button>
+            <button type="button" class="tab-btn" id="presetTabAdvanced">Advanced</button>
+            <button type="button" class="tab-btn" id="presetTabPreview">Preview</button>
+          </div>
+
+          <div id="presetBasicSection">
+            <div class="preset-settings-fields">
+              <div class="setting-row is-default" data-basic-key="resolution">
+                <label class="setting-label" for="pEditResolution">
+                  <span class="setting-label-text">Resolution Target</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Downscale before encode if the source is larger. Source keeps the original height. Also used for the [2160p]/ quality tag in library filenames.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditResolution" title="Reset to default (source)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="pEditResolution" class="form-input basic-field" data-default="source">
+                    <option value="source">Source (no resize)</option>
+                    <option value="1080p">1080p (downscale if larger)</option>
+                    <option value="1440p">1440p (downscale if larger)</option>
+                    <option value="2160p">2160p (downscale if larger)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-basic-key="crf">
+                <label class="setting-label" for="pEditCrf">
+                  <span class="setting-label-text">CRF</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">--crf
+Lower is higher quality / larger file. This is a single direct-pass CRF — there is no scene-boosting ladder anymore. (1–70)
+Default: 35</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditCrf" title="Reset to default (35)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <div class="svt-slider-wrap">
+                    <input type="range" id="pEditCrf" class="basic-field svt-slider svt-slider--reversed" data-default="35" min="1" max="70" step="1">
+                    <span class="svt-slider-val" id="pEditCrf_val">35</span>
+                  </div>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-basic-key="preset">
+                <label class="setting-label" for="pEditPreset">
+                  <span class="setting-label-text">Encoder Preset</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">--preset
+Lower is slower / higher quality per given CRF, higher is faster. This is a single direct encode pass — Tritium has no separate fast/final pass speeds. (-3 to 13)
+Default: 3</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditPreset" title="Reset to default (3)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <div class="svt-slider-wrap">
+                    <input type="range" id="pEditPreset" class="basic-field svt-slider svt-slider--reversed" data-default="3" min="-3" max="13" step="1">
+                    <span class="svt-slider-val" id="pEditPreset_val">3</span>
+                  </div>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-basic-key="tune">
+                <label class="setting-label" for="pEditTune">
+                  <span class="setting-label-text">Tune</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">--tune
+VQ leans toward visual preference; SSIM/MS-SSIM toward structural similarity; IQ tunes for image quality metrics; Film Grain tunes for grain-heavy sources.
+Default: PSNR</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditTune" title="Reset to default (PSNR)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="pEditTune" class="form-input basic-field" data-default="1">
+                    <option value="0">VQ (Visual Quality)</option>
+                    <option value="1">PSNR (Default)</option>
+                    <option value="2">SSIM</option>
+                    <option value="3">IQ (Image Quality)</option>
+                    <option value="4">MS-SSIM</option>
+                    <option value="5">Film Grain</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="presetAudioSection" class="hidden">
+            <div class="preset-settings-fields">
+              <div class="setting-row is-default" data-basic-key="audio51">
+                <label class="setting-label" for="pEditAudio51">
+                  <span class="setting-label-text">5.1 Bitrate</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Target bitrate for surround (Opus or E-AC-3). ~320 kbps suits Opus; E-AC-3 often uses 384–640 kbps.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditAudio51" title="Reset to default (320k)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="pEditAudio51" class="form-input basic-field" data-default="320k">
+                    <option value="256k">256 kbps</option>
+                    <option value="320k">320 kbps</option>
+                    <option value="384k">384 kbps</option>
+                    <option value="448k">448 kbps</option>
+                    <option value="640k">640 kbps</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-basic-key="audioStereo">
+                <label class="setting-label" for="pEditAudioStereo">
+                  <span class="setting-label-text">Stereo Bitrate</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Bitrate for 2-channel audio. 160 kbps is a solid Opus default; 192 kbps suits E-AC-3 stereo.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditAudioStereo" title="Reset to default (160k)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="pEditAudioStereo" class="form-input basic-field" data-default="160k">
+                    <option value="128k">128 kbps</option>
+                    <option value="160k">160 kbps</option>
+                    <option value="192k">192 kbps</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="presetAdvancedSection" class="hidden">
+            <div id="presetAdvancedFields" class="preset-advanced-fields">
+              <!-- Populated by app.js -->
+            </div>
+          </div>
+
+          <div id="presetPreviewSection" class="hidden">
+            <div class="preset-command-preview" id="presetCommandPreview">
+              <div class="preset-command-preview-label">Command variables <span class="preset-command-preview-hint">(non-defaults only)</span></div>
+              <pre class="preset-command-preview-body" id="presetCommandPreviewBody">All settings at defaults.</pre>
+            </div>
+          </div>
+
+          <div class="modal-actions-row">
+            <button class="btn btn-outline" id="btnCancelPresetModal" style="margin-right: 10px;">Cancel</button>
+            <button class="btn btn-primary" id="btnSavePreset">Save Preset</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Test Mode Settings Modal -->
+    <div class="modal-backdrop hidden" id="testModeModal">
+      <div class="modal-window" style="width: 560px;">
+        <div class="modal-header">
+          <h3>Test Mode Settings</h3>
+          <button class="modal-close" id="btnCloseTestModeModal">✕</button>
+        </div>
+        <div class="modal-body">
+          <!-- Enable control is #btnTestModeToggle in the nav; keep checkbox for JS compatibility (hidden). -->
+          <input type="checkbox" id="testModeEnabled" class="hidden" aria-hidden="true" tabindex="-1">
+          <p class="test-mode-desc">
+            Encode only a short time range from each source. Useful for verifying presets before a full run.
+            Toggle Test Mode on with the nav button; set the segment range here.
+          </p>
+          <div class="test-mode-fields is-enabled" id="testModeFields">
+            <div class="test-time-block">
+              <label class="test-time-label">From</label>
+              <div class="test-time-inputs" id="testFromInputs">
+                <input type="number" id="testFromH" min="0" max="99" value="1" aria-label="From hours">
+                <span>:</span>
+                <input type="number" id="testFromM" min="0" max="59" value="1" aria-label="From minutes">
+                <span>:</span>
+                <input type="number" id="testFromS" min="0" max="59" value="10" aria-label="From seconds">
+              </div>
+              <span class="test-time-hint">h&nbsp;&nbsp;&nbsp;m&nbsp;&nbsp;&nbsp;s</span>
+            </div>
+            <div class="test-time-arrow">→</div>
+            <div class="test-time-block">
+              <label class="test-time-label">To</label>
+              <div class="test-time-inputs" id="testToInputs">
+                <input type="number" id="testToH" min="0" max="99" value="1" aria-label="To hours">
+                <span>:</span>
+                <input type="number" id="testToM" min="0" max="59" value="1" aria-label="To minutes">
+                <span>:</span>
+                <input type="number" id="testToS" min="0" max="59" value="30" aria-label="To seconds">
+              </div>
+              <span class="test-time-hint">h&nbsp;&nbsp;&nbsp;m&nbsp;&nbsp;&nbsp;s</span>
+            </div>
+          </div>
+          <p class="test-mode-note" id="testModeNote">
+            Default sample: <strong>1:01:10 → 1:01:30</strong> (20 seconds). Turn on Test Mode to apply this range when you start the queue.
+          </p>
+          <div class="modal-actions-row" style="margin-top: 20px;">
+            <button type="button" class="btn btn-outline" id="btnCloseTestModeModalFooter" style="margin-right: 10px;">Close</button>
+            <button type="button" class="btn btn-primary" id="btnSaveTestMode">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-backdrop hidden" id="pipelineSettingsModal">
+      <div class="modal-window modal-window-scrollable">
+        <div class="modal-header">
+          <h3>Settings</h3>
+          <button class="modal-close" id="btnClosePipelineSettings">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="preset-section-tabs">
+            <button type="button" class="tab-btn active" id="pipelineTabGeneral">General</button>
+            <button type="button" class="tab-btn" id="pipelineTabApp">App</button>
+            <button type="button" class="tab-btn" id="pipelineTabAudio">Audio</button>
+            <button type="button" class="tab-btn" id="pipelineTabSubtitles">Subtitles</button>
+            <button type="button" class="tab-btn" id="pipelineTabNaming">Naming</button>
+            <button type="button" class="tab-btn" id="pipelineTabWatch">Watch folder</button>
+          </div>
+
+          <div id="pipelineGeneralSection">
+            <div class="preset-settings-fields">
+              <div class="setting-row is-default" data-pipeline-key="container">
+                <label class="setting-label" for="globalContainer">
+                  <span class="setting-label-text">Output container</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Final mux format for AV1 + audio. MP4 supports Opus and E-AC-3 (+faststart for web). WebM is Opus-only.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalContainer" title="Reset to default (MP4)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="globalContainer" class="form-input pipeline-field" data-default="mp4">
+                    <option value="mp4" selected>MP4</option>
+                    <option value="webm">WebM</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="autocrop">
+                <label class="setting-label" for="globalAutocrop">
+                  <span class="setting-label-text">Autocrop black bars</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Detects and removes letterboxing / pillarboxing before encode when enabled.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAutocrop" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalAutocrop" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="hdrStrict">
+                <label class="setting-label" for="globalHdrStrict">
+                  <span class="setting-label-text">Fail when HDR metadata cannot be preserved</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Dolby Vision / HDR10+ sources are checked before the encode starts: the SVT binary must accept --dolby-vision-rpu / --hdr10plus-json, the matching tool must be in bin/, and the extracted RPU / JSON must parse. If any of that fails the job stops in seconds instead of spending hours producing a plain HDR10 file named as if it were DoVi. Turn off to downgrade to HDR10 with a warning instead.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalHdrStrict" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalHdrStrict" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="ssimu2Post">
+                <label class="setting-label" for="globalSsimu2Post">
+                  <span class="setting-label-text">SSIMU2 post-encode score</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">After each encode, compare source vs final AV1 and store avg / p15 / min on Finished Encodes.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSsimu2Post" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalSsimu2Post" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="ssimu2">
+                <label class="setting-label" for="globalSsimu2">
+                  <span class="setting-label-text">SSIMU2 Metric Mode</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Auto picks GPU (Vship) when available, otherwise CPU (vs-zip) for post-encode SSIMU2 scoring.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSsimu2" title="Reset to default (Auto)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="globalSsimu2" class="form-input pipeline-field" data-default="auto">
+                    <option value="auto" selected>Auto</option>
+                    <option value="gpu">GPU (Vship CUDA)</option>
+                    <option value="cpu">CPU (vs-zip)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="ssimu2Target">
+                <label class="setting-label" for="globalSsimu2Target">
+                  <span class="setting-label-text">SSIMU2 Target</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Reference SSIMU2 score for "on target" quality. The post-encode score badge is colored green within ±5 of this value, and fades toward red the further above or below it — above just as much as below, since a score far above target means quality was over-spent (larger files than needed), not free.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSsimu2Target" title="Reset to default (80)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <div class="svt-slider-wrap">
+                    <input type="range" id="globalSsimu2Target" class="pipeline-field svt-slider" data-default="80" min="0" max="100" step="1">
+                    <span class="svt-slider-val" id="globalSsimu2Target_val">80</span>
+                  </div>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="svtLp">
+                <label class="setting-label" for="globalSvtLp">
+                  <span class="setting-label-text">Level of Parallelism (lp)</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">SVT --lp (0 = auto from core count). Higher = faster but much more RAM. Cap this on 4K if RAM is tight. Applies to all encodes.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSvtLp" title="Reset to default (0)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="globalSvtLp" class="form-input pipeline-field" data-default="0">
+                    <option value="0" selected>0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="svtLowMemory">
+                <label class="setting-label" for="globalSvtLowMemory">
+                  <span class="setting-label-text">Low Memory</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">SVT --low-memory. Reduces encoder RAM (can trade some speed/quality). Most effective in CRF/CQP random-access mode. Applies to all encodes.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSvtLowMemory" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalSvtLowMemory" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pipelineAppSection" class="hidden">
+            <div class="preset-settings-fields">
+              <div class="setting-row is-default" data-pipeline-key="hourFormat">
+                <label class="setting-label" for="globalHourFormat">
+                  <span class="setting-label-text">Hour format</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">How clock times are shown in the UI (e.g. Finished report timestamps). Does not affect encode durations.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalHourFormat" title="Reset to default (24-hour)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="globalHourFormat" class="form-input pipeline-field" data-default="24">
+                    <option value="24" selected>24-hour</option>
+                    <option value="12">12-hour</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="allowBuiltinPresetEdits">
+                <label class="setting-label" for="globalAllowBuiltinPresetEdits">
+                  <span class="setting-label-text">Enable built-in preset edits</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">When off, git-tracked built-in presets cannot be edited or deleted in the UI. New presets are always saved as local-only.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAllowBuiltinPresetEdits" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalAllowBuiltinPresetEdits" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pipelineAudioSection" class="hidden">
+            <div class="preset-settings-fields">
+              <div class="setting-row is-default" data-pipeline-key="audioFormat">
+                <label class="setting-label" for="globalAudioFormat">
+                  <span class="setting-label-text">Audio format</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Opus for efficient web playback (MP4 or WebM). E-AC-3 for DD+ compatibility — requires MP4.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAudioFormat" title="Reset to default (Opus)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="globalAudioFormat" class="form-input pipeline-field" data-default="opus">
+                    <option value="opus" selected>Opus</option>
+                    <option value="eac3">E-AC-3</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="audioBestOnly">
+                <label class="setting-label" for="globalAudioBestOnly">
+                  <span class="setting-label-text">Auto select single best track</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">When on, if a language has multiple tracks (e.g. TrueHD + DD+ English), only the best one is selected (prefer surround).</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAudioBestOnly" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalAudioBestOnly" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row setting-row--stack" data-pipeline-key="audioLangs">
+                <div class="setting-row-head">
+                  <label class="setting-label">
+                    <span class="setting-label-text">Auto select languages</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Priority order top → bottom. Used for auto-selection when adding jobs.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="setting-control audio-lang-control">
+                  <div class="audio-lang-list" id="pipelineAudioLangList"></div>
+                  <div class="audio-lang-add-row">
+                    <select id="pipelineAudioLangAdd" class="form-input">
+                      <option value="">Add language…</option>
+                    </select>
+                    <button type="button" class="btn btn-sm btn-outline" id="btnAddPipelineAudioLang">Add</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pipelineSubtitlesSection" class="hidden">
+            <div class="preset-settings-fields">
+              <div id="pipelineSubtitleTypesGroup">
+                <div class="setting-group-heading">Desired subtitle types</div>
+                <div class="setting-row setting-row--grouped is-default" data-pipeline-key="subKindStandard" id="pipelineSubKindStandardRow">
+                  <label class="setting-label" for="globalSubKindStandard">
+                    <span class="setting-label-text">Standard</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Extract normal dialogue subtitle tracks.</span>
+                    </span>
+                  </label>
+                  <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSubKindStandard" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                  <div class="setting-control">
+                    <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalSubKindStandard" role="switch" aria-checked="true" data-default="true" data-kind="standard">
+                      <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                      <span class="svt-toggle-label">On</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="setting-row setting-row--grouped is-default" data-pipeline-key="subKindForced" id="pipelineSubKindForcedRow">
+                  <label class="setting-label" for="globalSubKindForced">
+                    <span class="setting-label-text">Forced</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Extract forced-only subtitle tracks (e.g. alien language lines).</span>
+                    </span>
+                  </label>
+                  <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSubKindForced" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                  <div class="setting-control">
+                    <button type="button" class="svt-toggle pipeline-toggle" id="globalSubKindForced" role="switch" aria-checked="false" data-default="false" data-kind="forced">
+                      <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                      <span class="svt-toggle-label">Off</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="setting-row setting-row--grouped is-default" data-pipeline-key="subKindSdh" id="pipelineSubKindSdhRow">
+                  <label class="setting-label" for="globalSubKindSdh">
+                    <span class="setting-label-text">SDH / HI</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Extract hearing-impaired / SDH caption tracks.</span>
+                    </span>
+                  </label>
+                  <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSubKindSdh" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                  <div class="setting-control">
+                    <button type="button" class="svt-toggle pipeline-toggle" id="globalSubKindSdh" role="switch" aria-checked="false" data-default="false" data-kind="sdh">
+                      <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                      <span class="svt-toggle-label">Off</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="setting-row setting-row--stack" data-pipeline-key="subLangs" id="pipelineSubLangsRow">
+                <div class="setting-row-head">
+                  <label class="setting-label">
+                    <span class="setting-label-text">Languages</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Languages used for embedded extract and for OpenSubtitles fill when Search missing is on. Leave empty to extract all text subtitle languages (online search still needs at least one language listed).</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="setting-control audio-lang-control audio-lang-control--full">
+                  <div class="audio-lang-list" id="pipelineSubLangList"></div>
+                  <div class="audio-lang-add-row">
+                    <select id="pipelineSubLangAdd" class="form-input">
+                      <option value="">Add language…</option>
+                    </select>
+                    <button type="button" class="btn btn-sm btn-outline" id="btnAddPipelineSubLang">Add</button>
+                  </div>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="stripSubCredits" id="pipelineStripSubCreditsRow">
+                <label class="setting-label" for="globalStripSubCredits">
+                  <span class="setting-label-text">Remove credit / author lines</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Strip leading and trailing cues like “Created by…”, “Subtitles by…”, copyright notices, and site ads from extracted or downloaded subtitle files. Dialogue in the middle of the file is left alone.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalStripSubCredits" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalStripSubCredits" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="extractSubs">
+                <label class="setting-label" for="globalExtractSubtitles">
+                  <span class="setting-label-text">Extract subtitles</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">After a successful encode, extract text subtitles from the original file next to it. Runs in the background so the next queue job can start immediately. Image-based subs (PGS, etc.) are skipped.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalExtractSubtitles" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalExtractSubtitles" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="subSearch">
+                <label class="setting-label" for="globalSubtitleSearch">
+                  <span class="setting-label-text">Search missing subs online</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">After extract (or alone if extract is off), download any missing language × subtitle-type slots from OpenSubtitles. Matches by IMDb ID when available, prefers FPS close to the source, and honors Standard / Forced / SDH toggles (e.g. Forced + Standard downloads both when missing).</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSubtitleSearch" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalSubtitleSearch" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row setting-row--stack" data-pipeline-key="osKey">
+                <div class="setting-row-head">
+                  <label class="setting-label" for="settingsOsApiKey">
+                    <span class="setting-label-text">OpenSubtitles API key</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Consumer API key from opensubtitles.com. Optional login raises download limits.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="setting-control" style="display:flex;flex-direction:column;gap:8px;width:100%;">
+                  <input type="password" id="settingsOsApiKey" class="form-input" placeholder="OpenSubtitles API key" autocomplete="off">
+                  <input type="text" id="settingsOsUser" class="form-input" placeholder="Username (optional)" autocomplete="username">
+                  <input type="password" id="settingsOsPass" class="form-input" placeholder="Password (optional)" autocomplete="current-password">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pipelineNamingSection" class="hidden">
+            <div class="preset-settings-fields scroll-thin">
+              <div class="setting-row setting-row--stack" data-pipeline-key="nameTemplateMovie">
+                <div class="setting-row-head">
+                  <label class="setting-label" for="globalNameTemplateMovie">
+                    <span class="setting-label-text">Movie filename template</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Tokens: [name] [year] [imdbid] [quality] [width] [height] [resolution] [hdr] [original]. Extension (mp4/webm) is appended automatically. Example: [name] ([year]) [imdbid-[imdbid]] - [[quality]]</span>
+                    </span>
+                  </label>
+                  <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateMovie" title="Reset to default template" aria-label="Reset to default">↺</button>
+                </div>
+                <div class="setting-control">
+                  <input type="text" id="globalNameTemplateMovie" class="form-input pipeline-field" data-default="[name] ([year]) [imdbid-[imdbid]] - [[quality]]" spellcheck="false">
+                </div>
+              </div>
+              <div class="setting-row setting-row--stack" data-pipeline-key="nameTemplateEpisode">
+                <div class="setting-row-head">
+                  <label class="setting-label" for="globalNameTemplateEpisode">
+                    <span class="setting-label-text">Episode filename template</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Used when the source looks like a series episode. Extra tokens: [show] [epname] [season] [episode] [sxxexx]. Extension is appended automatically.</span>
+                    </span>
+                  </label>
+                  <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateEpisode" title="Reset to default template" aria-label="Reset to default">↺</button>
+                </div>
+                <div class="setting-control">
+                  <input type="text" id="globalNameTemplateEpisode" class="form-input pipeline-field" data-default="[show] - S[season]E[episode] - [epname] - [[quality]]" spellcheck="false">
+                </div>
+              </div>
+              <p class="pipeline-settings-note naming-tokens-note">
+                Tokens: <code>[name]</code> <code>[year]</code> <code>[imdbid]</code> <code>[quality]</code>
+                <code>[width]</code> <code>[height]</code> <code>[resolution]</code> <code>[hdr]</code>
+                <code>[original]</code>
+                · episodes also: <code>[show]</code> <code>[epname]</code> <code>[season]</code> <code>[episode]</code> <code>[sxxexx]</code>
+                · extension (mp4/webm) is appended automatically
+              </p>
+              <div class="setting-row is-default" data-pipeline-key="tmdbLookup">
+                <label class="setting-label" for="globalTmdbLookup">
+                  <span class="setting-label-text">TMDB lookup for IMDb ID</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">If the filename has no imdbid-tt… tag, search The Movie Database by title/year. Needs a free TMDB API key.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalTmdbLookup" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalTmdbLookup" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row setting-row--stack" data-pipeline-key="tmdbKey">
+                <div class="setting-row-head">
+                  <label class="setting-label" for="settingsTmdbApiKey">
+                    <span class="setting-label-text">TMDB API key</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Paste either the v3 API Key or the v4 API Read Access Token from themoviedb.org (Settings → API). Stored in server/settings.json on this machine.</span>
+                  </span>
+                  </label>
+                </div>
+                <div class="setting-control">
+                  <input type="password" id="settingsTmdbApiKey" class="form-input" placeholder="TMDB API key or Read Access Token" autocomplete="off">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pipelineWatchSection" class="hidden">
+            <div class="preset-settings-fields scroll-thin">
+              <div class="setting-row is-default" data-pipeline-key="watchFolderEnabled">
+                <label class="setting-label" for="globalWatchFolderEnabled">
+                  <span class="setting-label-text">Watch folder auto-queue</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Watches a folder for new video files and queues them automatically, in place. A filename containing "preset-&lt;id&gt;" (e.g. movie.preset-4k_standard.mkv) selects that preset; otherwise the default preset below is used. The finished AV1 file is written to an encoded subfolder; once that output is verified, the original source is moved into an encoded_sources subfolder.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalWatchFolderEnabled" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalWatchFolderEnabled" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row setting-row--stack" data-pipeline-key="watchFolderPath">
+                <div class="setting-row-head">
+                  <label class="setting-label" for="settingsWatchFolderPath">
+                    <span class="setting-label-text">Watched folder path</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Absolute path to the folder to watch. Changing this restarts the watcher immediately on Save.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="setting-control">
+                  <input type="text" id="settingsWatchFolderPath" class="form-input" placeholder="e.g. D:\Incoming" autocomplete="off">
+                </div>
+              </div>
+              <div class="setting-row setting-row--stack" data-pipeline-key="watchFolderPreset">
+                <div class="setting-row-head">
+                  <label class="setting-label" for="settingsWatchFolderPreset">
+                    <span class="setting-label-text">Default preset for watched files</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Used when a file's name doesn't carry a "preset-&lt;id&gt;" tag, or that tag doesn't match a known preset.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="setting-control">
+                  <select id="settingsWatchFolderPreset" class="form-input">
+                    <option value="">(No default — use built-in defaults)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-actions-row">
+            <button type="button" class="btn btn-outline" id="btnCancelPipelineSettings" style="margin-right: 10px;">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btnSavePipelineSettings">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Queue Item Modal -->
+    <div class="modal-backdrop hidden" id="editJobModal">
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3>Edit Queue Item</h3>
+          <button class="modal-close" id="btnCloseEditJob">✕</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="editJobId">
+          <div class="form-group">
+            <label>File</label>
+            <div class="edit-job-filename" id="editJobFileName">—</div>
+          </div>
+          <div class="form-group">
+            <label for="editJobTitle">Library title</label>
+            <input type="text" id="editJobTitle" class="form-input" placeholder="Spider-Man Far from Home">
+          </div>
+          <div class="form-group" style="display:flex;gap:10px;">
+            <div style="flex:1;">
+              <label for="editJobYear">Year</label>
+              <input type="number" id="editJobYear" class="form-input" placeholder="2019" min="1900" max="2100">
+            </div>
+            <div style="flex:2;">
+              <label for="editJobImdb">IMDb ID</label>
+              <input type="text" id="editJobImdb" class="form-input" placeholder="tt6320628">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Proposed output</label>
+            <div class="edit-job-filename" id="editJobOutputName">—</div>
+          </div>
+          <div class="form-group">
+            <label for="editJobPreset">Quality Preset</label>
+            <select id="editJobPreset" class="form-input">
+              <!-- Populated dynamically -->
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Audio Tracks</label>
+            <div class="insp-tracks-list" id="editJobAudioTracks"></div>
+          </div>
+          <div class="modal-actions-row" style="margin-top: 20px;">
+            <button type="button" class="btn btn-outline" id="btnCancelEditJob" style="margin-right: 10px;">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btnSaveEditJob">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log & Report Modal -->
+    <div class="modal-backdrop hidden" id="logReportModal">
+      <div class="modal-window" style="width: 800px; max-width: 95vw;">
+        <div class="modal-header">
+          <h3 id="logModalTitle">Encode Report & Log</h3>
+          <button class="modal-close" id="btnCloseLogModal">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="log-report-summary" id="logReportSummary"></div>
+          <div class="terminal-box scroll-thin" style="max-height: 380px; margin-top: 14px;" id="logModalTerminal">
+            <div class="terminal-logs" id="logModalContent"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Indeterminate loading overlay (probe / batch add) -->
+    <div class="modal-backdrop hidden" id="loadingModal" aria-live="polite" aria-busy="true">
+      <div class="modal-window loading-window">
+        <div class="modal-body loading-body">
+          <p id="loadingMessage" class="loading-message">Reading media…</p>
+          <div class="loading-track" aria-hidden="true">
+            <div class="loading-bar"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generic themed dialog — replaces window.alert()/confirm() -->
+    <div class="modal-backdrop hidden" id="dialogModal">
+      <div class="modal-window dialog-window">
+        <div class="modal-body dialog-body">
+          <div class="dialog-copy">
+            <p id="dialogMessage" class="dialog-prompt"></p>
+            <p id="dialogSubject" class="dialog-subject hidden"></p>
+          </div>
+          <div class="modal-actions-row dialog-actions">
+            <button class="btn btn-primary" id="btnDialogOk">OK</button>
+            <button class="btn btn-outline hidden" id="btnDialogCancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=pass17"></script>
+</body>
+</html>

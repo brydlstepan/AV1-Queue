@@ -1,0 +1,25 @@
+{
+  "id": "preset_1789061080339",
+  "name": "4K (noise)",
+  "description": "",
+  "crf": 32.0,
+  "preset": 3,
+  "resolution_target": "2160p",
+  "audio_bitrate_51": "320k",
+  "audio_bitrate_stereo": "160k",
+  "audio_languages": null,
+  "audio_best_only": true,
+  "svt_params": {
+    "adaptive-film-grain": 1,
+    "noise-norm-strength": 2,
+    "tx-bias": 1,
+    "complex-hvs": 1,
+    "noise-adaptive-filtering": 0,
+    "film-grain": 10,
+    "qm-min": 4,
+    "qm-max": 14,
+    "noise": 25,
+    "noise-size": 2,
+    "tune": 0
+  }
+}

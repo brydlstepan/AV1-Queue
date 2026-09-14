@@ -1,0 +1,18 @@
+# Python packages for vs/python-env (installed by scripts/setup_env.py).
+# Keep in sync with setup — prefer editing this file and letting setup install -r.
+
+wheel
+setuptools
+vapoursynth
+vstools
+vsjetpack
+rich
+fastapi
+uvicorn[standard]
+websockets
+psutil
+py7zr
+langcodes
+guessit
+charset-normalizer
+watchdog

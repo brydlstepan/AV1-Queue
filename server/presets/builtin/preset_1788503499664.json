@@ -1,0 +1,20 @@
+{
+  "id": "preset_1788503499664",
+  "name": "4K Standard",
+  "description": "",
+  "crf": 32.0,
+  "preset": 3,
+  "resolution_target": "2160p",
+  "audio_bitrate_51": "320k",
+  "audio_bitrate_stereo": "160k",
+  "audio_languages": [
+    "eng",
+    "ces"
+  ],
+  "audio_best_only": true,
+  "svt_params": {
+    "adaptive-film-grain": 1,
+    "film-grain": 8,
+    "noise": 8
+  }
+}
