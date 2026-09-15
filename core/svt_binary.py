@@ -43,24 +43,6 @@ def get_cpu_name() -> str:
     if os.name != "nt":
         return ""
     try:
-        import subprocess
-
-        r = subprocess.run(
-            ["wmic", "cpu", "get", "Name"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
-        for ln in lines:
-            if ln.lower() != "name":
-                return ln
-    except Exception:
-        pass
-    try:
         import winreg
 
         key = winreg.OpenKey(
@@ -69,7 +51,7 @@ def get_cpu_name() -> str:
         )
         name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
         winreg.CloseKey(key)
-        return str(name or "")
+        return str(name or "").strip()
     except Exception:
         return ""
 

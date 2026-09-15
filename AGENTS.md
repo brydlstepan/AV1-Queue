@@ -1,4 +1,4 @@
-# AGENTS.md — AV1 Queue Studio
+# AGENTS.md — AV1 Queue
 
 Guidance for AI agents working in this repository. Prefer this file over re-deriving project intent from scattered sources; the README has deeper rationale.
 
@@ -92,7 +92,6 @@ Useful API: `/api/queue`, `/api/queue/add`, `/api/queue/update`, `/api/queue/req
 - **Presets:** builtin JSON under `server/presets/builtin/` are shared defaults; local presets are machine-only
 - **SVT overrides:** non-defaults go through preset `svt_params` → `--svt-params` in `core/svt_encode.py`
 - Prefer extending existing `core/` modules over adding parallel encode stacks
-- Do not expand scope into DV→HDR10+ conversion, Profile 10 emission, or full colour-managed HDR remastering — out of scope by design
 
 ## When changing behavior
 

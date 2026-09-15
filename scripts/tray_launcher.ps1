@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Runs AV1 Queue Studio as a background process with a system tray icon —
+    Runs AV1 Queue as a background process with a system tray icon —
     no console window, not shown on the taskbar. Right-click the tray icon to
     open the studio, start/pause/resume the queue, view the log, or stop the server.
 #>
@@ -24,7 +24,7 @@ Set-Location $RootDir
 if (-not (Test-Path $PythonExe)) {
     [System.Windows.Forms.MessageBox]::Show(
         "Virtual environment not found.`n`nDouble-click setup.bat in the project folder first.",
-        "AV1 Queue Studio", "OK", "Error"
+        "AV1 Queue", "OK", "Error"
     ) | Out-Null
     exit 1
 }
@@ -112,7 +112,7 @@ function Invoke-QueueAction([string]$Action) {
 function Open-Studio { Start-Process $StudioUrl }
 
 # Serialize start/attach so two quick runGUI.bat clicks cannot spawn two uvicorns.
-$startMutex = New-Object System.Threading.Mutex($false, "Local\AV1QueueStudioServerStart")
+$startMutex = New-Object System.Threading.Mutex($false, "Local\AV1QueueServerStart")
 $mutexHeld = $false
 try {
     $mutexHeld = $startMutex.WaitOne(30000)
@@ -166,7 +166,7 @@ try {
                 }
                 [System.Windows.Forms.MessageBox]::Show(
                     $detail,
-                    "AV1 Queue Studio", "OK", "Error"
+                    "AV1 Queue", "OK", "Error"
                 ) | Out-Null
                 exit 1
             }
@@ -182,7 +182,7 @@ try {
 $icon = [System.Drawing.SystemIcons]::Application
 $trayIcon = New-Object System.Windows.Forms.NotifyIcon
 $trayIcon.Icon = $icon
-$trayIcon.Text = "AV1 Queue Studio"
+$trayIcon.Text = "AV1 Queue"
 $trayIcon.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -222,14 +222,14 @@ $startItem.add_Click({
     if (-not (Test-ServerHealthy)) {
         [System.Windows.Forms.MessageBox]::Show(
             "Server is not responding. Check logs\server.err.log or re-run runGUI.bat.",
-            "AV1 Queue Studio", "OK", "Warning"
+            "AV1 Queue", "OK", "Warning"
         ) | Out-Null
         return
     }
     if (-not (Invoke-QueueAction "start")) {
         [System.Windows.Forms.MessageBox]::Show(
             "Could not start the queue. Is the server running?",
-            "AV1 Queue Studio", "OK", "Warning"
+            "AV1 Queue", "OK", "Warning"
         ) | Out-Null
     }
 })
@@ -241,14 +241,14 @@ $pauseItem.add_Click({
         if (-not (Invoke-QueueAction "resume")) {
             [System.Windows.Forms.MessageBox]::Show(
                 "Could not resume the queue. Is the server running?",
-                "AV1 Queue Studio", "OK", "Warning"
+                "AV1 Queue", "OK", "Warning"
             ) | Out-Null
         }
     } else {
         if (-not (Invoke-QueueAction "pause")) {
             [System.Windows.Forms.MessageBox]::Show(
                 "Could not pause the queue. Is the server running?",
-                "AV1 Queue Studio", "OK", "Warning"
+                "AV1 Queue", "OK", "Warning"
             ) | Out-Null
         }
     }
@@ -265,7 +265,7 @@ $stopItem.add_Click({
     [System.Windows.Forms.Application]::Exit()
 })
 
-$trayIcon.ShowBalloonTip(3000, "AV1 Queue Studio", "Running in the tray. Right-click for options.", [System.Windows.Forms.ToolTipIcon]::Info)
+$trayIcon.ShowBalloonTip(3000, "AV1 Queue", "Running in the tray. Right-click for options.", [System.Windows.Forms.ToolTipIcon]::Info)
 
 if ($freshStart -and (Test-ServerHealthy)) {
     Open-Studio

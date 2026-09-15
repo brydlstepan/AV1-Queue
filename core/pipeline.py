@@ -18,7 +18,7 @@ import re
 import subprocess
 import threading
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Tuple
 
 from core.hdr_dovi import HDRDoviProcessor
 from core.subtitle_extract import extract_text_subtitles
@@ -88,6 +88,32 @@ def format_hms(seconds: float) -> str:
     m = (total % 3600) // 60
     s = total % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+# Resolution-target label → downscale height (0 = keep source).
+RES_HEIGHT_MAP = {"source": 0, "1080p": 1080, "1440p": 1440, "2160p": 2160}
+
+
+def target_height_for(resolution_target: Any) -> int:
+    """Map a resolution_target label to a downscale height (0 = keep source)."""
+    return RES_HEIGHT_MAP.get(str(resolution_target).lower(), 0)
+
+
+def normalize_audio_format(value: Any) -> str:
+    """Canonical audio format: 'opus' or 'eac3', defaulting to 'opus'."""
+    fmt = (str(value) if value else "opus").strip().lower()
+    return fmt if fmt in ("opus", "eac3") else "opus"
+
+
+def crop_to_csv(crop: Optional[Dict[str, int]]) -> str:
+    """Format a crop dict as the "left,top,right,bottom" string the VS scripts parse."""
+    crop = crop or {}
+    return (
+        f"{int(crop.get('left', 0))},"
+        f"{int(crop.get('top', 0))},"
+        f"{int(crop.get('right', 0))},"
+        f"{int(crop.get('bottom', 0))}"
+    )
 
 
 class TranscodePipeline:
@@ -172,20 +198,25 @@ class TranscodePipeline:
             seen.add(pid)
             self._kill_popen_tree(proc)
 
-    def suspend_current_process(self) -> bool:
-        """Suspends (freezes) tracked encode helpers and the active encode process tree."""
+    def _signal_process_trees(self, action: str) -> bool:
+        """Suspend or resume the tracked encode helpers + active process tree.
+
+        Suspend freezes children before the parent (so the parent can't spawn a
+        new child that escapes the freeze); resume unfreezes the parent first.
+        """
+        label = action.capitalize()
         try:
             import psutil
         except Exception as e:
-            print(f"[!] Suspend error: {e}")
+            print(f"[!] {label} error: {e}")
             return False
 
-        suspended = False
         with self._proc_lock:
             procs = list(self._tracked_procs)
             if self.current_process is not None:
                 procs.append(self.current_process)
 
+        done = False
         seen = set()
         for proc in procs:
             if proc is None or proc.poll() is not None:
@@ -196,51 +227,134 @@ class TranscodePipeline:
             seen.add(pid)
             try:
                 p = psutil.Process(pid)
-                for child in p.children(recursive=True):
-                    try:
-                        child.suspend()
-                    except Exception:
-                        pass
-                p.suspend()
-                suspended = True
+                children = p.children(recursive=True)
+                if action == "suspend":
+                    for child in children:
+                        try:
+                            child.suspend()
+                        except Exception:
+                            pass
+                    p.suspend()
+                else:
+                    p.resume()
+                    for child in children:
+                        try:
+                            child.resume()
+                        except Exception:
+                            pass
+                done = True
             except Exception as e:
-                print(f"[!] Suspend error pid={pid}: {e}")
-        return suspended
+                print(f"[!] {label} error pid={pid}: {e}")
+        return done
+
+    def suspend_current_process(self) -> bool:
+        """Suspends (freezes) tracked encode helpers and the active encode process tree."""
+        return self._signal_process_trees("suspend")
 
     def resume_current_process(self) -> bool:
         """Resumes (unfreezes) tracked encode helpers and the active encode process tree."""
-        try:
-            import psutil
-        except Exception as e:
-            print(f"[!] Resume error: {e}")
-            return False
+        return self._signal_process_trees("resume")
 
-        resumed = False
-        with self._proc_lock:
-            procs = list(self._tracked_procs)
-            if self.current_process is not None:
-                procs.append(self.current_process)
+    def _run_capture(
+        self,
+        cmd: List[str],
+        *,
+        cancel_event: Optional[threading.Event] = None,
+        on_abort: Optional[Callable[[], None]] = None,
+        cancel_msg: str = "Operation cancelled by user.",
+        fail_prefix: str = "Subprocess failed",
+        **popen_kwargs: Any,
+    ) -> Tuple[str, str, int]:
+        """
+        Run cmd to completion, draining stdout+stderr on a worker thread so a full
+        pipe buffer can't deadlock a poll loop, and kill it if cancel_event fires.
+        Returns (stdout, stderr, returncode). Raises RuntimeError(cancel_msg) on
+        cancel and RuntimeError(fail_prefix: …) if communicate() itself failed;
+        on_abort (e.g. delete a partial file) runs before either raise.
+        """
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **popen_kwargs,
+        )
+        self._track_process(proc)
+        captured: Dict[str, Any] = {}
 
-        seen = set()
-        for proc in procs:
-            if proc is None or proc.poll() is not None:
-                continue
-            pid = getattr(proc, "pid", None)
-            if not pid or pid in seen:
-                continue
-            seen.add(pid)
+        def _drain():
             try:
-                p = psutil.Process(pid)
-                p.resume()
-                for child in p.children(recursive=True):
-                    try:
-                        child.resume()
-                    except Exception:
-                        pass
-                resumed = True
+                captured["out"], captured["err"] = proc.communicate()
             except Exception as e:
-                print(f"[!] Resume error pid={pid}: {e}")
-        return resumed
+                captured["exc"] = e
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
+        try:
+            while reader.is_alive():
+                if cancel_event and cancel_event.is_set():
+                    self._kill_popen_tree(proc)
+                    reader.join(timeout=5)
+                    if on_abort:
+                        try:
+                            on_abort()
+                        except Exception:
+                            pass
+                    raise RuntimeError(cancel_msg)
+                reader.join(timeout=0.2)
+        finally:
+            self._untrack_process(proc)
+
+        if captured.get("exc"):
+            if on_abort:
+                try:
+                    on_abort()
+                except Exception:
+                    pass
+            raise RuntimeError(f"{fail_prefix}: {captured['exc']}")
+        return captured.get("out"), captured.get("err"), proc.returncode
+
+    def _run_to_log(
+        self,
+        cmd: List[str],
+        err_log: Path,
+        cancel_event: Optional[threading.Event] = None,
+        poll: float = 0.2,
+    ) -> Optional[int]:
+        """
+        Run cmd with stdout discarded and stderr → err_log, polling to completion.
+        Returns the exit code, or None if cancel_event fired (process killed).
+        Raises only if the process cannot be spawned. Callers decide how to treat
+        a non-zero code or a None (cancel) result.
+        """
+        err_f = None
+        try:
+            err_f = open(err_log, "w", encoding="utf-8", errors="replace")
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_f)
+        except Exception:
+            if err_f is not None:
+                try:
+                    err_f.close()
+                except Exception:
+                    pass
+            raise
+        self._track_process(proc)
+        try:
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    self._kill_popen_tree(proc)
+                    return None
+                if proc.poll() is not None:
+                    return proc.returncode
+                time.sleep(poll)
+        finally:
+            self._untrack_process(proc)
+            try:
+                err_f.close()
+            except Exception:
+                pass
 
     def clean_audio_track_title(self, title: str, source_file: Optional[Path] = None) -> str:
         """
@@ -367,35 +481,11 @@ class TranscodePipeline:
         ])
 
         err_log = output_file.with_suffix(output_file.suffix + ".ffmpeg.log")
-        err_f = None
-        try:
-            err_f = open(err_log, "w", encoding="utf-8", errors="replace")
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_f)
-        except Exception:
-            if err_f is not None:
-                try:
-                    err_f.close()
-                except Exception:
-                    pass
-            raise
-        self._track_process(proc)
-        try:
-            while True:
-                if cancel_event and cancel_event.is_set():
-                    self._kill_popen_tree(proc)
-                    raise RuntimeError("Test segment extract cancelled by user.")
-                ret = proc.poll()
-                if ret is not None:
-                    break
-                time.sleep(0.2)
-        finally:
-            self._untrack_process(proc)
-            try:
-                err_f.close()
-            except Exception:
-                pass
+        returncode = self._run_to_log(cmd, err_log, cancel_event)
+        if returncode is None:
+            raise RuntimeError("Test segment extract cancelled by user.")
 
-        if proc.returncode != 0 or not output_file.exists() or output_file.stat().st_size < 1024:
+        if returncode != 0 or not output_file.exists() or output_file.stat().st_size < 1024:
             tail = ""
             try:
                 tail = err_log.read_text(encoding="utf-8", errors="replace")[-800:]
@@ -457,11 +547,7 @@ class TranscodePipeline:
         if progress_cb:
             progress_cb(f"Detecting black bars ({len(sample_starts)} sample(s))...")
 
-        crop_re = re.compile(
-            r"cropdetect.*(w|(?:crop=))(?P<w>\d+):(?P<h>\d+):(?P<x>\d+):(?P<y>\d+)",
-            re.IGNORECASE,
-        )
-        # Also match classic: crop=1920:800:0:140
+        # ffmpeg cropdetect emits the result as "crop=W:H:X:Y" on the summary line.
         crop_eq = re.compile(r"crop=(?P<w>\d+):(?P<h>\d+):(?P<x>\d+):(?P<y>\d+)")
 
         # Least-crop-wins: collect every valid detection, then
@@ -501,7 +587,7 @@ class TranscodePipeline:
                 continue
 
             for line in blob.splitlines():
-                m = crop_eq.search(line) or crop_re.search(line)
+                m = crop_eq.search(line)
                 if not m:
                     continue
                 w, h, x, y = (int(m.group("w")), int(m.group("h")), int(m.group("x")), int(m.group("y")))
@@ -711,9 +797,7 @@ class TranscodePipeline:
         audio_format: "opus" (libopus) or "eac3".
         """
         priority = [self.lang_family(x) for x in (languages or ["eng", "ces"])]
-        fmt = (audio_format or "opus").strip().lower()
-        if fmt not in ("opus", "eac3"):
-            fmt = "opus"
+        fmt = normalize_audio_format(audio_format)
         ffmpeg_codec = "eac3" if fmt == "eac3" else "libopus"
 
         if user_selected_indices is not None:
@@ -830,9 +914,7 @@ class TranscodePipeline:
 
             s_idx = track["stream_index"]
             lang = track["language"]
-            fmt = (track.get("audio_format") or "opus").strip().lower()
-            if fmt not in ("opus", "eac3"):
-                fmt = "opus"
+            fmt = normalize_audio_format(track.get("audio_format"))
             codec = track.get("target_codec") or ("eac3" if fmt == "eac3" else "libopus")
             ext = "eac3" if fmt == "eac3" else "opus"
             codec_label = "E-AC-3" if fmt == "eac3" else "Opus"
@@ -857,53 +939,19 @@ class TranscodePipeline:
             cmd.append(str(out_file))
 
             err_log = job_temp_dir / f"audio_track_{idx}_{lang}.ffmpeg.log"
-            err_f = None
-            try:
-                err_f = open(err_log, "w", encoding="utf-8", errors="replace")
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=err_f,
-                )
-            except Exception:
-                if err_f is not None:
-                    try:
-                        err_f.close()
-                    except Exception:
-                        pass
-                raise
-            self._track_process(proc)
-            killed = False
-            try:
-                while True:
-                    if cancel_event and cancel_event.is_set():
-                        killed = True
-                        self._kill_popen_tree(proc)
-                        return None
-                    ret = proc.poll()
-                    if ret is not None:
-                        break
-                    time.sleep(0.2)
-
-                if killed:
-                    return None
-                if proc.returncode != 0:
-                    err_f.flush()
-                    tail = ""
-                    try:
-                        tail = err_log.read_text(encoding="utf-8", errors="replace")[-800:]
-                    except Exception:
-                        pass
-                    print(f"[!] Warning: Failed to transcode audio stream {s_idx} (exit {proc.returncode})")
-                    if tail:
-                        print(tail)
-                    return None
-            finally:
-                self._untrack_process(proc)
+            returncode = self._run_to_log(cmd, err_log, cancel_event)
+            if returncode is None:
+                return None  # cancelled — outer loop treats this as a stop, not a failure
+            if returncode != 0:
+                tail = ""
                 try:
-                    err_f.close()
+                    tail = err_log.read_text(encoding="utf-8", errors="replace")[-800:]
                 except Exception:
                     pass
+                print(f"[!] Warning: Failed to transcode audio stream {s_idx} (exit {returncode})")
+                if tail:
+                    print(tail)
+                return None
 
             if not out_file.is_file() or out_file.stat().st_size < 64:
                 print(f"[!] Warning: Audio transcode produced empty/tiny file for stream {s_idx}")
@@ -965,13 +1013,7 @@ class TranscodePipeline:
         script_path = CORE_DIR / "svt_encode.py"
         python_bin = str(VENV_PYTHON)
 
-        height_map = {
-            "source": 0,
-            "1080p": 1080,
-            "1440p": 1440,
-            "2160p": 2160,
-        }
-        target_height = height_map.get(str(resolution_target).lower(), 0)
+        target_height = target_height_for(resolution_target)
 
         cmd = [
             python_bin, str(script_path),
@@ -983,13 +1025,7 @@ class TranscodePipeline:
         ]
 
         if crop and any(int(crop.get(k, 0) or 0) for k in ("left", "top", "right", "bottom")):
-            cmd.extend([
-                "--crop",
-                f"{int(crop.get('left', 0))},"
-                f"{int(crop.get('top', 0))},"
-                f"{int(crop.get('right', 0))},"
-                f"{int(crop.get('bottom', 0))}",
-            ])
+            cmd.extend(["--crop", crop_to_csv(crop)])
 
         if extra_svt_params:
             cmd.extend(["--svt-params", extra_svt_params])
@@ -1149,20 +1185,8 @@ class TranscodePipeline:
         Score source vs final encode with SSIMULACRA2 (avg / p15 / min).
         Runs in the VS venv as a subprocess.
         """
-        height_map = {
-            "source": 0,
-            "1080p": 1080,
-            "1440p": 1440,
-            "2160p": 2160,
-        }
-        target_height = height_map.get(str(resolution_target).lower(), 0)
-        crop = crop or {}
-        crop_str = (
-            f"{int(crop.get('left', 0))},"
-            f"{int(crop.get('top', 0))},"
-            f"{int(crop.get('right', 0))},"
-            f"{int(crop.get('bottom', 0))}"
-        )
+        target_height = target_height_for(resolution_target)
+        crop_str = crop_to_csv(crop)
 
         if progress_cb:
             progress_cb("Measuring average SSIMU2 on test encode...")
@@ -1184,42 +1208,16 @@ class TranscodePipeline:
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
 
-        proc = subprocess.Popen(
+        # communicate() runs on a worker (inside _run_capture) so the pipes drain
+        # continuously — polling while nothing reads stdout/stderr deadlocks as
+        # soon as VapourSynth fills the ~64 KB pipe buffer with per-frame warnings.
+        stdout, stderr, returncode = self._run_capture(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            cancel_event=cancel_event,
+            cancel_msg="SSIMU2 measurement cancelled by user.",
+            fail_prefix="SSIMU2 measurement failed",
             env=env,
         )
-        self._track_process(proc)
-        # communicate() runs on a worker so the pipes are drained continuously.
-        # Polling proc.poll() while nothing reads stdout/stderr deadlocks as soon
-        # as VapourSynth fills the ~64 KB pipe buffer with per-frame warnings.
-        captured = {}
-
-        def _drain():
-            try:
-                captured["out"], captured["err"] = proc.communicate()
-            except Exception as e:
-                captured["exc"] = e
-
-        reader = threading.Thread(target=_drain, daemon=True)
-        reader.start()
-        try:
-            while reader.is_alive():
-                if cancel_event and cancel_event.is_set():
-                    self._kill_popen_tree(proc)
-                    reader.join(timeout=5)
-                    raise RuntimeError("SSIMU2 measurement cancelled by user.")
-                reader.join(timeout=0.2)
-        finally:
-            self._untrack_process(proc)
-
-        if captured.get("exc"):
-            raise RuntimeError(f"SSIMU2 measurement failed: {captured['exc']}")
-        stdout, stderr = captured.get("out"), captured.get("err")
 
         raw = (stdout or "").strip().splitlines()
         payload = None
@@ -1235,7 +1233,7 @@ class TranscodePipeline:
         if not payload or not payload.get("ok"):
             err = (payload or {}).get("error") if payload else None
             if not err:
-                err = (stderr or stdout or f"exit {proc.returncode}")[-500:]
+                err = (stderr or stdout or f"exit {returncode}")[-500:]
             raise RuntimeError(f"SSIMU2 measurement failed: {err}")
 
         if progress_cb:
@@ -1329,55 +1327,27 @@ class TranscodePipeline:
             cmd.extend(["-f", "webm"])
         cmd.append(str(partial))
 
-        # Popen + tracking (not subprocess.run) so Stop can kill an in-flight mux;
+        # Tracked Popen (not subprocess.run) so Stop can kill an in-flight mux;
         # a blocking run() here leaves the worker stuck for minutes on a large file.
-        proc = subprocess.Popen(
+        # A cancel or a spawn/pipe error deletes the partial before raising.
+        def _drop_partial():
+            try:
+                partial.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        _out, mux_err, returncode = self._run_capture(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            cancel_event=cancel_event,
+            on_abort=_drop_partial,
+            cancel_msg="Muxing cancelled by user.",
+            fail_prefix="FFmpeg muxing failed",
         )
-        self._track_process(proc)
-        captured = {}
 
-        def _drain_mux():
-            try:
-                captured["out"], captured["err"] = proc.communicate()
-            except Exception as e:
-                captured["exc"] = e
-
-        mux_reader = threading.Thread(target=_drain_mux, daemon=True)
-        mux_reader.start()
-        try:
-            while mux_reader.is_alive():
-                if cancel_event and cancel_event.is_set():
-                    self._kill_popen_tree(proc)
-                    mux_reader.join(timeout=5)
-                    try:
-                        partial.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    raise RuntimeError("Muxing cancelled by user.")
-                mux_reader.join(timeout=0.2)
-        finally:
-            self._untrack_process(proc)
-
-        if captured.get("exc"):
-            try:
-                partial.unlink(missing_ok=True)
-            except Exception:
-                pass
-            raise RuntimeError(f"FFmpeg muxing failed: {captured['exc']}")
-
-        if proc.returncode != 0:
-            try:
-                partial.unlink(missing_ok=True)
-            except Exception:
-                pass
+        if returncode != 0:
+            _drop_partial()
             label = "WebM" if fmt == "webm" else "MP4"
-            raise RuntimeError(f"FFmpeg {label} muxing failed: {captured.get('err')}")
+            raise RuntimeError(f"FFmpeg {label} muxing failed: {mux_err}")
 
         if not partial.is_file() or partial.stat().st_size < 64:
             try:

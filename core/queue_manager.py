@@ -1,8 +1,9 @@
 """
-Queue Manager for AV1 Queue Studio Transcode Jobs
+Queue Manager for AV1 Queue Transcode Jobs
 Handles background worker execution, state persistence, live progress events, and WebSocket broadcasting.
 """
 
+import copy
 import json
 import os
 import time
@@ -13,8 +14,8 @@ import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
-from core.pipeline import TranscodePipeline, frame_rate_to_float
-from core.app_settings import load_settings
+from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format
+from core.app_settings import load_settings, JOB_CONFIG_DEFAULTS
 from core.media_tagging import build_media_tag, library_output_path, refresh_media_tag_quality
 from core.subtitle_search import search_and_download_missing
 from core.svt_binary import get_svt_status
@@ -236,7 +237,7 @@ def default_output_path(input_path: str, config: Optional[Dict[str, Any]] = None
     if use_library and media_tag:
         return library_output_path(inp, media_tag, config=cfg)
 
-    ext = "webm" if str(cfg.get("container", "mp4")).lower() == "webm" else "mp4"
+    ext = "webm" if str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower() == "webm" else "mp4"
     if cfg.get("test_mode"):
         start_tag = str(cfg.get("trim_start", "start")).replace(":", "")
         end_tag = str(cfg.get("trim_end", "end")).replace(":", "")
@@ -299,6 +300,23 @@ class QueueManager:
                 cb(event_type, data)
             except Exception:
                 pass
+
+    @staticmethod
+    def _progress_payload(job: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
+        """Snapshot a job's live progress fields into a 'job_progress' WS payload.
+        Callers hold progress_lock and pass extras like log=..., stage_percent=..."""
+        payload = {
+            "id": job["id"],
+            "status": job["status"],
+            "stage": job["stage"],
+            "stage_num": job.get("stage_num", 0),
+            "progress": job.get("progress", 0),
+            "stage_percent": job.get("stage_percent", 0),
+            "fps": job.get("fps", 0),
+            "elapsed": job.get("elapsed_seconds", 0),
+        }
+        payload.update(extra)
+        return payload
 
     def _reserved_output_paths(self, exclude_job_id: Optional[str] = None) -> Set[str]:
         reserved: Set[str] = set()
@@ -443,46 +461,21 @@ class QueueManager:
         hdr_info = self.pipeline.hdr_processor.analyze_hdr_and_dovi(inp, probe=raw_probe)
 
         settings = load_settings()
-        default_config = {
-            "crf": 30.0,
-            "preset": 4,
-            "resolution_target": "source",
-            "audio_tracks_order": self.pipeline.select_default_audio_indices(
-                media["audio_tracks"],
-                languages=(config or {}).get("audio_languages"),
-                best_only=(config or {}).get("audio_best_only", True),
-            ),
-            "audio_bitrate_51": "320k",
-            "audio_bitrate_stereo": "160k",
-            "audio_format": "opus",
-            "audio_languages": ["eng", "ces"],
-            "audio_best_only": True,
-            "container": "mp4",
-            "test_mode": False,
-            "trim_start": "01:01:10",
-            "trim_end": "01:01:30",
-            "autocrop": True,
-            "ssimu2_post": True,
-            "extract_subtitles": True,
-            "subtitle_languages": ["eng", "ces"],
-            "subtitle_kinds": ["standard"],
-            "subtitle_strip_credits": True,
-            "autoname_output": settings.get("autoname_output", True),
-            "name_template_movie": settings.get(
-                "name_template_movie",
-                "[name] ([year]) [imdbid-[imdbid]] - [[quality]]",
-            ),
-            "name_template_episode": settings.get(
-                "name_template_episode",
-                "[show] - S[season]E[episode] - [epname] - [[quality]]",
-            ),
-            "subtitle_search": settings.get("subtitle_search", False),
-        }
+        # Base defaults from the single source of truth, then overlay the ones
+        # that must track a user-facing app setting. load_settings() always
+        # returns every _DEFAULTS key, so a plain lookup is safe.
+        default_config = copy.deepcopy(JOB_CONFIG_DEFAULTS)
+        default_config.update({
+            "autoname_output": settings["autoname_output"],
+            "name_template_movie": settings["name_template_movie"],
+            "name_template_episode": settings["name_template_episode"],
+            "subtitle_search": settings["subtitle_search"],
+        })
 
+        has_audio_order = bool(config) and "audio_tracks_order" in config
         if config:
             cleaned = dict(config)
             # Explicit key (including []) = user choice; missing key keeps auto defaults.
-            has_audio_order = "audio_tracks_order" in cleaned
             audio_order = cleaned.pop("audio_tracks_order", None) if has_audio_order else None
             default_config.update(cleaned)
             if has_audio_order:
@@ -490,13 +483,22 @@ class QueueManager:
                     list(audio_order) if audio_order is not None else []
                 )
 
+        # Auto-pick audio only when the caller didn't specify a selection — the
+        # probe-based default is otherwise computed and immediately discarded.
+        if not has_audio_order:
+            default_config["audio_tracks_order"] = self.pipeline.select_default_audio_indices(
+                media["audio_tracks"],
+                languages=default_config.get("audio_languages"),
+                best_only=default_config.get("audio_best_only", JOB_CONFIG_DEFAULTS["audio_best_only"]),
+            )
+
         media_tag = build_media_tag(
             inp,
             video=media.get("video"),
             hdr_info=hdr_info,
             settings=settings,
-            container=default_config.get("container") or "mp4",
-            resolution_target=default_config.get("resolution_target") or "source",
+            container=default_config.get("container") or JOB_CONFIG_DEFAULTS["container"],
+            resolution_target=default_config.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
         )
 
         # Default output path: library naming when enabled, else _av1_boost
@@ -593,8 +595,8 @@ class QueueManager:
                     tag,
                     video=video,
                     hdr_info=hdr_info,
-                    resolution_target=cfg.get("resolution_target") or "source",
-                    container=cfg.get("container") or "mp4",
+                    resolution_target=cfg.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
+                    container=cfg.get("container") or JOB_CONFIG_DEFAULTS["container"],
                     settings=job_settings,
                 )
                 job["media_tag"] = tag
@@ -638,8 +640,8 @@ class QueueManager:
             "test_mode": bool(test_mode_config.get("test_mode")),
         }
         if fields["test_mode"]:
-            fields["trim_start"] = str(test_mode_config.get("trim_start") or "01:01:10")
-            fields["trim_end"] = str(test_mode_config.get("trim_end") or "01:01:30")
+            fields["trim_start"] = str(test_mode_config.get("trim_start") or JOB_CONFIG_DEFAULTS["trim_start"])
+            fields["trim_end"] = str(test_mode_config.get("trim_end") or JOB_CONFIG_DEFAULTS["trim_end"])
 
         updated: List[Dict[str, Any]] = []
         with self._lock:
@@ -722,10 +724,13 @@ class QueueManager:
                     j["status"] = JobStatus.QUEUED
                     j["stage"] = "Waiting in Queue"
                     j["stage_num"] = 0
-                    j["progress"] = 0
-                    j["fps"] = 0
+                    j["progress"] = 0.0
+                    j["fps"] = 0.0
+                    j["elapsed_seconds"] = 0
                     j["error"] = None
                     j["logs"] = []
+                    j["stats"] = {}
+                    j["pid"] = None
                     requeued.append(j)
         self.save_queue()
         for j in requeued:
@@ -921,19 +926,7 @@ class QueueManager:
                 if time.monotonic() - last_progress_emit[0] < 0.9:
                     return
                 job["elapsed_seconds"] = int(time.time() - start_time)
-                payload = {
-                    "id": job_id,
-                    "status": job["status"],
-                    "stage": job["stage"],
-                    "stage_num": job.get("stage_num", 0),
-                    "progress": job.get("progress", 0),
-                    "stage_percent": job.get("stage_percent", 0),
-                    "fps": job.get("fps", 0),
-                    "elapsed": job["elapsed_seconds"],
-                }
-                if extra:
-                    payload.update(extra)
-                self.emit_event("job_progress", payload)
+                self.emit_event("job_progress", self._progress_payload(job, **(extra or {})))
 
         def elapsed_ticker():
             # Keep the UI elapsed clock moving even when a stage has no progress lines
@@ -1005,20 +998,18 @@ class QueueManager:
                 selected_indices = self.pipeline.select_default_audio_indices(
                     audio_tracks,
                     languages=cfg.get("audio_languages"),
-                    best_only=cfg.get("audio_best_only", True),
+                    best_only=cfg.get("audio_best_only", JOB_CONFIG_DEFAULTS["audio_best_only"]),
                 )
             ordered_audio = self.pipeline.select_and_prioritize_audio(
                 audio_tracks,
                 selected_indices,
-                bitrate_51=cfg.get("audio_bitrate_51", "320k"),
-                bitrate_stereo=cfg.get("audio_bitrate_stereo", "160k"),
+                bitrate_51=cfg.get("audio_bitrate_51", JOB_CONFIG_DEFAULTS["audio_bitrate_51"]),
+                bitrate_stereo=cfg.get("audio_bitrate_stereo", JOB_CONFIG_DEFAULTS["audio_bitrate_stereo"]),
                 languages=cfg.get("audio_languages"),
-                audio_format=cfg.get("audio_format", "opus"),
+                audio_format=cfg.get("audio_format", JOB_CONFIG_DEFAULTS["audio_format"]),
             )
-            audio_fmt = (cfg.get("audio_format") or "opus").strip().lower()
-            if audio_fmt not in ("opus", "eac3"):
-                audio_fmt = "opus"
-            container_early = str(cfg.get("container", "mp4")).lower()
+            audio_fmt = normalize_audio_format(cfg.get("audio_format"))
+            container_early = str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower()
             if audio_fmt == "eac3" and container_early == "webm":
                 raise RuntimeError("E-AC-3 audio requires MP4 container (WebM only supports Opus).")
 
@@ -1031,17 +1022,7 @@ class QueueManager:
                         job["stage"] = msg
                     job["elapsed_seconds"] = int(time.time() - start_time)
                     last_progress_emit[0] = time.monotonic()
-                    self.emit_event("job_progress", {
-                        "id": job_id,
-                        "status": job["status"],
-                        "stage": job["stage"],
-                        "stage_num": job.get("stage_num", 0),
-                        "progress": job.get("progress", 0),
-                        "stage_percent": job.get("stage_percent", 0),
-                        "fps": job.get("fps", 0),
-                        "elapsed": job["elapsed_seconds"],
-                        "log": msg
-                    })
+                    self.emit_event("job_progress", self._progress_payload(job, log=msg))
 
             def set_stage_progress(pct: float, stage: Optional[str] = None, log_msg: Optional[str] = None):
                 """Update step-1 ring + overall bar; optional one-shot log line."""
@@ -1057,19 +1038,8 @@ class QueueManager:
                         job["logs"].append(log_msg)
                         if len(job["logs"]) > 200:
                             job["logs"].pop(0)
-                    payload = {
-                        "id": job_id,
-                        "status": job["status"],
-                        "stage": job["stage"],
-                        "stage_num": job.get("stage_num", 0),
-                        "progress": job.get("progress", 0),
-                        "stage_percent": pct,
-                        "fps": job.get("fps", 0),
-                        "elapsed": job["elapsed_seconds"],
-                    }
-                    if log_msg:
-                        payload["log"] = log_msg
-                    self.emit_event("job_progress", payload)
+                    extra = {"log": log_msg} if log_msg else {}
+                    self.emit_event("job_progress", self._progress_payload(job, **extra))
 
             # HDR / DoVi (+ optional HDR10+ JSON when Tritium supports it)
             svt_caps = (get_svt_status() or {}).get("caps") or {}
@@ -1166,8 +1136,8 @@ class QueueManager:
                 append_log("Audio selection: none (video-only)", update_stage=False)
 
             if cfg.get("test_mode"):
-                trim_start = cfg.get("trim_start", "01:01:10")
-                trim_end = cfg.get("trim_end", "01:01:30")
+                trim_start = cfg.get("trim_start", JOB_CONFIG_DEFAULTS["trim_start"])
+                trim_end = cfg.get("trim_end", JOB_CONFIG_DEFAULTS["trim_end"])
                 append_log(
                     f"Test Mode enabled — encoding segment {trim_start} → {trim_end}",
                     update_stage=True
@@ -1270,9 +1240,7 @@ class QueueManager:
             def audio_cb(msg):
                 append_log(msg, update_stage=True)
 
-            audio_fmt = (cfg.get("audio_format") or "opus").strip().lower()
-            if audio_fmt not in ("opus", "eac3"):
-                audio_fmt = "opus"
+            audio_fmt = normalize_audio_format(cfg.get("audio_format"))
             audio_label = "E-AC-3" if audio_fmt == "eac3" else "Opus"
 
             # Audio after HDR10+ extract — avoid concurrent ffmpeg + VS on the same MKV
@@ -1325,17 +1293,7 @@ class QueueManager:
 
                     job["elapsed_seconds"] = int(time.time() - start_time)
                     last_progress_emit[0] = time.monotonic()
-                    self.emit_event("job_progress", {
-                        "id": job_id,
-                        "status": job["status"],
-                        "stage": job["stage"],
-                        "stage_num": job["stage_num"],
-                        "progress": job["progress"],
-                        "stage_percent": job.get("stage_percent", 0),
-                        "fps": job["fps"],
-                        "elapsed": job["elapsed_seconds"],
-                        "log": raw
-                    })
+                    self.emit_event("job_progress", self._progress_payload(job, log=raw))
 
             # Autocrop (least-crop-wins — see detect_black_bar_crop)
             crop = {"left": 0, "top": 0, "right": 0, "bottom": 0}
@@ -1382,13 +1340,13 @@ class QueueManager:
             self.emit_event("job_update", job)
 
             try:
-                encode_resolution = cfg.get("resolution_target", "source")
+                encode_resolution = cfg.get("resolution_target", JOB_CONFIG_DEFAULTS["resolution_target"])
 
                 encoded_ivf = self.pipeline.run_svt_encode(
                     input_file=encode_input,
                     job_temp_dir=encode_temp_dir,
-                    crf=cfg.get("crf", 30.0),
-                    preset=cfg.get("preset", 4),
+                    crf=cfg.get("crf", JOB_CONFIG_DEFAULTS["crf"]),
+                    preset=cfg.get("preset", JOB_CONFIG_DEFAULTS["preset"]),
                     resolution_target=encode_resolution,
                     extra_svt_params=extra_svt_params,
                     hdr10plus_json=hdr10plus_json_path,
@@ -1412,7 +1370,7 @@ class QueueManager:
                 raise RuntimeError("Job cancelled.")
 
             # 4. Final container mux (MP4 or WebM)
-            container = str(cfg.get("container", "mp4")).lower()
+            container = str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower()
             if container != "webm":
                 container = "mp4"
             job["status"] = JobStatus.REMUXING
@@ -1486,7 +1444,7 @@ class QueueManager:
                         encoded_file=encoded_ivf,
                         ssimu2_mode=cfg.get("ssimu2", "auto"),
                         crop=crop,
-                        resolution_target=cfg.get("resolution_target", "source"),
+                        resolution_target=cfg.get("resolution_target", JOB_CONFIG_DEFAULTS["resolution_target"]),
                         skip=metric_skip,
                         progress_cb=lambda msg: append_log(msg, update_stage=True),
                         cancel_event=self._cancel_event,

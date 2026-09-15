@@ -1,5 +1,5 @@
 """
-AV1 Queue Studio - FastAPI & WebSocket Server
+AV1 Queue - FastAPI & WebSocket Server
 Provides local REST API and real-time WebSocket progress stream for the Queue GUI.
 """
 
@@ -10,6 +10,7 @@ import json
 import time
 import asyncio
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import psutil
@@ -25,6 +26,7 @@ STATIC_DIR = BASE_DIR / "server" / "static"
 # Import QueueManager
 sys.path.insert(0, str(BASE_DIR))
 from core.queue_manager import QueueManager
+from core.pipeline import normalize_audio_format
 from core.app_settings import load_settings, save_settings
 from core.presets_store import (
     delete_preset_file,
@@ -34,9 +36,6 @@ from core.presets_store import (
 from core.svt_binary import ensure_svt_binary, get_svt_status
 from core.watch_folder import WatchFolderService
 
-app = FastAPI(title="AV1 Queue")
-queue_mgr = QueueManager()
-
 # Connected WebSocket clients
 active_websockets: List[WebSocket] = []
 loop = None
@@ -44,24 +43,8 @@ _svt_startup: Dict[str, Any] = {}
 _watch_service: Optional[WatchFolderService] = None
 
 
-def broadcast_event(event_type: str, data: Dict[str, Any]):
-    """Thread-safe WebSocket broadcaster."""
-    global loop
-    if not loop or not active_websockets:
-        return
-    message = json.dumps({"event": event_type, "data": data})
-    for ws in list(active_websockets):
-        try:
-            asyncio.run_coroutine_threadsafe(ws.send_text(message), loop)
-        except Exception:
-            pass
-
-
-queue_mgr.add_listener(broadcast_event)
-
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global loop, _svt_startup
     loop = asyncio.get_running_loop()
     try:
@@ -76,14 +59,34 @@ async def startup_event():
         print(f"[svt] Startup binary select failed: {e}")
         _svt_startup = {"ok": False, "message": str(e)}
     _restart_watch_service()
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
+    yield
     global _watch_service
     if _watch_service is not None:
         _watch_service.stop()
         _watch_service = None
+
+
+app = FastAPI(title="AV1 Queue", lifespan=lifespan)
+queue_mgr = QueueManager()
+
+
+def broadcast_event(event_type: str, data: Dict[str, Any]):
+    """Thread-safe WebSocket broadcaster."""
+    global loop
+    if not loop or not active_websockets:
+        return
+    message = json.dumps({"event": event_type, "data": data})
+    for ws in list(active_websockets):
+        try:
+            asyncio.run_coroutine_threadsafe(ws.send_text(message), loop)
+        except Exception:
+            # Drop a socket we can no longer schedule a send on, so a long-lived
+            # server doesn't accumulate dead entries between receive-loop cleanups.
+            if ws in active_websockets:
+                active_websockets.remove(ws)
+
+
+queue_mgr.add_listener(broadcast_event)
 
 
 def _restart_watch_service():
@@ -474,9 +477,7 @@ async def probe_file(
     raw = queue_mgr.pipeline.hdr_processor.probe_video_streams(p)
     media = queue_mgr.pipeline.probe_media(p, probe=raw)
     hdr = queue_mgr.pipeline.hdr_processor.analyze_hdr_and_dovi(p, probe=raw)
-    fmt = (audio_format or "opus").strip().lower()
-    if fmt not in ("opus", "eac3"):
-        fmt = "opus"
+    fmt = normalize_audio_format(audio_format)
     prioritized_audio = queue_mgr.pipeline.select_and_prioritize_audio(
         media["audio_tracks"],
         audio_format=fmt,
@@ -524,8 +525,8 @@ def _query_gpu():
 
 
 def _cached_svt_status():
-    """get_svt_status() re-reads the marker, globs bin/svt and can shell out to
-    wmic (5s timeout). It only changes when the binary is swapped."""
+    """get_svt_status() re-reads the marker, globs bin/svt and can query the CPU
+    name from the registry. It only changes when the binary is swapped."""
     now = time.monotonic()
     if _svt_cache["value"] is not None and now - _svt_cache["at"] < _SVT_POLL_SECONDS:
         return _svt_cache["value"]
@@ -625,8 +626,7 @@ async def pick_files_dialog():
         # slow and must not block the asyncio loop after the dialog closes.
         return [str(Path(p).resolve()) for p in selected]
 
-    loop = asyncio.get_event_loop()
-    paths = await loop.run_in_executor(None, _run_picker)
+    paths = await asyncio.get_running_loop().run_in_executor(None, _run_picker)
 
     if paths:
         return {"status": "ok", "paths": paths}

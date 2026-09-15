@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title AV1 Queue Studio — Setup
+title AV1 Queue — Setup
 cd /d "%~dp0"
 
 echo.
