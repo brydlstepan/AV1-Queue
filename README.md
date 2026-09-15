@@ -1,4 +1,4 @@
-# AV1 Queue Studio
+# AV1 Queue
 
 Local **AV1 encoding queue** with a browser UI. Wraps [SVT-AV1-Tritium](https://github.com/Uranite/svt-av1-tritium) direct single-pass encoding into a FastAPI backend plus a dark web frontend for batch jobs, presets, audio selection, HDR/DoVi handling, and live progress.
 
@@ -128,76 +128,23 @@ AV1-Queue/
 
 ## Format philosophy
 
-Why AV1, MP4, and Opus specifically — the tradeoffs considered and rejected, for a
-Jellyfin library that has to keep playing correctly as client hardware changes over
-the next several years.
+Everything here targets a Jellyfin library that direct-plays on the widest range of clients, with server-side transcoding as a rare fallback rather than a routine cost.
 
 ### Video codec: AV1
 
-Best compression-efficiency-per-quality of any codec practical today, and the
-direction both the industry and hardware decoders are moving. Hardware AV1 decode is
-broadly available on ~2021+ silicon (Apple TV 4K 3rd-gen+, most 2021+ smart TVs,
-RDNA2+/Intel 11th-gen+/RTX 30-series+ GPUs). An older or weaker client that lacks it
-falls back to Jellyfin server-side transcoding — that's the intended safety net, not
-something to design the library around; it only costs CPU/GPU time on the rare
-incompatible playback, not storage or re-encoding.
+AV1 gives the best compression-efficiency-per-quality of any practical codec today, and hardware decode is broadly available on ~2021+ devices. A client without it falls back to Jellyfin server-side transcoding — the intended safety net, costing CPU time only on the rare incompatible playback, never storage or re-encoding.
 
 ### Container: MP4, not MKV
 
-MKV is the de facto standard for AV1+HDR rips and has the best native-app / TV-app
-compatibility (Kodi, Android/iOS/tvOS apps, desktop players — all use their own
-demuxers). But **no major browser can demux MKV** via `<video>`/MSE, so Jellyfin Web
-always has to remux or transcode the container regardless of what codecs are inside
-it — an MKV library forces a browser-side conversion step on every web playback.
+MP4 is the one container every target client — native apps and browsers alike — can direct-play without a translation step. MKV has better native-app support but no browser can demux it, so an MKV library forces a remux or transcode on every web playback. Modern ffmpeg and current browsers handle Opus-in-MP4 and multi-track audio fine, so MP4's historical weaknesses no longer apply.
 
-MP4 lets both native apps *and* the browser direct-play the same file. The
-historical downside — weaker multi-audio-track/subtitle support and shakier
-Opus-in-MP4 muxing than MKV — isn't a real trap in practice: modern ffmpeg muxing and
-current browsers/players handle it fine (`audio/mp4; codecs=opus` has been supported
-in Chrome/Firefox for years). MP4 is the pick because it's the one container every
-target client — web included — can direct-play without a translation step.
+### Audio: Opus (5.1 default), E-AC-3 optional
 
-### Audio: Opus (5.1 default), E-AC-3 as an explicit opt-out
-
-Opus at a given bitrate beats E-AC-3 on quality, is royalty-free, and is what this
-pipeline defaults to for both 5.1 and stereo. The one real constraint: Opus is
-**decode-only** — no AVR/soundbar can bitstream-passthrough it, the *playing device*
-has to decode it to PCM first. That's a non-issue for essentially every modern
-software player (Kodi, Jellyfin's own desktop client via mpv, Android apps via
-ExoPlayer all decode Opus natively) — a device that can't decode Opus at all is rare
-enough, and cheap enough for Jellyfin to fix with an audio-only transcode, that it
-isn't worth compromising the whole library's audio codec for.
-
-That's the general rule this pipeline follows: **direct-play video always; let
-Jellyfin do a cheap audio-only transcode for the rare client that can't handle the
-audio codec, rather than picking a worse codec library-wide to avoid it.** Video
-transcoding is the expensive operation everything here is built to avoid; audio
-transcoding is not. `audio_format` (`opus` / `eac3`) is exposed per-preset for
-setups that specifically rely on AVR bitstream passthrough instead of client-side
-decode.
-
-5.1→stereo downmixing on 2-channel outputs is handled correctly by standard
-OS/browser/player audio stacks (ITU-R BS.775 coefficients) — not something worth
-avoiding Opus or 5.1 over.
+Opus beats E-AC-3 on quality at a given bitrate and is royalty-free, so it's the default for both 5.1 and stereo. Its one constraint is being decode-only — no AVR can bitstream-passthrough it — but every modern software player decodes it natively, and the rare client that can't is cheaply covered by a Jellyfin audio-only transcode. The principle throughout: direct-play video always, and accept a cheap audio-only transcode for the odd client rather than picking a worse codec library-wide. `audio_format` (`opus` / `eac3`) is exposed per-preset for setups that rely on AVR passthrough. Standard players downmix 5.1→stereo correctly, so that needs no special handling either.
 
 ### HDR & Dolby Vision
 
-The one rule: **can the source's base layer stand on its own?** If yes, encode it and
-preserve whatever dynamic metadata it carries. If no, don't encode it — keep the
-original. Only Dolby Vision **Profile 5** answers "no". **Dolby Vision is never
-emitted.**
-
-The source answers this directly in one ffprobe field, `dv_bl_signal_compatibility_id`:
-**0 means no, anything else means yes.** For P7/P8.1 the base layer is already a valid
-HDR10 picture, so discarding the RPU is free and correct. P5's base layer is stored in
-DV's IPT-PQc2 colourspace — dropping the RPU and tagging the result HDR10 gets it
-decoded as ordinary YCbCr, producing a permanent green/purple cast. There is no cheap
-fix: profile 8.1 is *definitionally* "profile 5's RPU plus an HDR10-compatible base
-layer," so if a P5 file's base layer were usable as HDR10, the file would already be
-P8.1. A correct conversion needs a DV-aware renderer (e.g. ffmpeg's `libplacebo` filter
-with a Vulkan GPU) as a deliberate, separate pre-processing step — out of scope for
-this pipeline, which orchestrates specialist tools rather than doing HDR/colour work
-itself.
+The single rule: **can the source's base layer stand on its own?** If yes, encode it and preserve whatever dynamic metadata it carries; if no, leave the original untouched. Dolby Vision is never emitted. The `dv_bl_signal_compatibility_id` ffprobe field answers this — 0 means no, anything else means yes. Profile 7 / 8.1 base layers are already valid HDR10, so the RPU is dropped cleanly. Profile 5's base layer is stored in DV's IPT-PQc2 colourspace, so tagging it HDR10 would bake in a permanent colour cast and there's no cheap conversion — so P5 sources are skipped and kept as-is. DV over AV1 would require Profile 10, which almost nothing plays today, and DV metadata cannot be converted to HDR10+, so the untouched P5 original stays the best-preserved artifact.
 
 | Source | Base layer standalone? | Output |
 |--------|------------------------|--------|
@@ -212,60 +159,13 @@ itself.
 | Filename says DoVi, not probe-confirmed | unknown | **quarantined** — P5 cannot be ruled out |
 | DoVi confirmed, profile/compat unknown | unknown | **quarantined** for manual review |
 
-#### HDR10+ passthrough — the one dynamic-metadata path kept
+#### HDR10+ passthrough
 
-HDR10+ is **passthrough-only**: it can be carried through but not created. It needs two
-halves, both or neither:
-
-1. A libhdr10plus-enabled SVT-AV1-Tritium binary (`--hdr10plus-json`). Tritium's
-   prebuilt Windows Release assets ship with this compiled in by default — no
-   special build needed. `scripts/setup_env.py` downloads the latest Windows
-   release if the vendored `bin/svt/` binaries are missing, honours a
-   `SVT_TRITIUM_URL` override, and warns if the installed binary lacks the flag.
-2. The HDR10+ JSON, extracted by `hdr10plus_tool`. HDR10+ lives in frame SEI, so the
-   pipeline samples frames (not just stream side-data) to detect it.
-
-If either half is missing, an HDR10+ source encodes as plain HDR10 (or fails preflight
-when "Fail when HDR metadata cannot be preserved" is on).
-
-> **Why no Dolby Vision output?** Dolby Vision profiles are codec-bound — DV **Profile
-> 10** is the only one that runs on AV1, and TV support for it is essentially nonexistent
-> today: Apple has the strongest silicon story (Profile 10 hardware from A17 Pro / M3),
-> no TV manufacturer publicly documents Profile 10 for local file playback, and player
-> apps (Infuse, Kodi, Plex/Jellyfin) only have open feature requests, not shipped support.
-> The strongest evidence: **Netflix**, which holds professional DV masters and has more
-> device-certification leverage than anyone, ships **zero frames of Dolby Vision over
-> AV1** — DV stays on their HEVC ladder, while their AV1 ladder pairs with **HDR10+**
-> instead (driven by Samsung, whose TVs skip DV but back HDR10+). DV → HDR10+ conversion
-> is also impossible outright: DV's RPU is a *display-referred* model (per-frame reshape
-> coefficients, per-target-display trims) while HDR10+ is a *content-referred* statistical
-> model (luminance percentiles, Bezier tone-curve anchors) — the fields don't map, and no
-> tool performs this conversion. Keeping the untouched P5 original is the future-proofing:
-> a P5 file re-encoded to AV1 with the RPU retained is profile 10.0 (non-backward-compatible,
-> plays on almost nothing, no HDR10 fallback), so the artifact worth holding onto is the
-> source, not a lossy 2026 re-encode.
+HDR10+ can be carried through but not created. It needs both a libhdr10plus-enabled SVT-AV1-Tritium binary (`--hdr10plus-json`, shipped by default in Tritium's Windows releases) and the HDR10+ JSON extracted by `hdr10plus_tool` from frame SEI. If either is missing, an HDR10+ source encodes as plain HDR10 (or fails preflight when "Fail when HDR metadata cannot be preserved" is on).
 
 #### Sourcing guidance
 
-P5 is a dead end for this pipeline — prefer it least at acquisition time, in order:
-
-1. **HDR10+** — top tier, passes through intact
-2. **DV P7 or P8.1** — base layer is already valid HDR10, drops cleanly
-3. **HDR10 / HLG** — encodes correctly, no special handling
-4. **SDR** — trivial
-5. **DV P5** — last resort; will be skipped and stay un-unified
-
-Where a title exists only as P5, it stays in its original form — partial unification is
-the correct outcome, not a failure.
-
-#### References
-
-- [Uranite/svt-av1-tritium — Releases](https://github.com/Uranite/svt-av1-tritium/releases) (prebuilt Windows binaries with HDR10+ / DoVi RPU passthrough)
-- [AOM — HDR10+ AV1 Metadata Handling Specification](https://aomediacodec.github.io/av1-hdr10plus/)
-- [quietvoid/dovi_tool issue #23 — DV RPU → HDR10+ (never implemented)](https://github.com/quietvoid/dovi_tool/issues/23)
-- [Netflix TechBlog — HDR10+ Now Streaming](https://netflixtechblog.com/hdr10-now-streaming-on-netflix-c9ab1f4bd72b)
-- [Dolby — Introduction to Profile 10](https://professionalsupport.dolby.com/s/article/Introduction-to-Dolby-Vision-Profile-10)
-- [gyan.dev FFmpeg builds — essentials vs full](https://www.gyan.dev/ffmpeg/builds/) (libplacebo is full-build-only)
+Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8.1 (base layer drops cleanly to HDR10) → HDR10 / HLG → SDR → DV P5 (last resort; skipped and left in its original form).
 
 ---
 

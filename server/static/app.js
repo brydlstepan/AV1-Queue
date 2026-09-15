@@ -1203,6 +1203,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireSettingsToggle(document.getElementById("globalSubtitleSearch"));
   wireSettingsToggle(document.getElementById("globalSvtLowMemory"));
   wireSettingsToggle(document.getElementById("globalWatchFolderEnabled"));
+  wireSettingsToggle(document.getElementById("globalAllowBuiltinPresetEdits"));
 
   const globalSvtLp = document.getElementById("globalSvtLp");
   if (globalSvtLp) {
@@ -2620,8 +2621,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (e) {}
   }
-  // Self-scheduling rather than setInterval: /api/system can block (nvidia-smi,
-  // wmic) during a heavy encode, and a fixed interval would stack requests that
+  // Self-scheduling rather than setInterval: /api/system can block (nvidia-smi)
+  // during a heavy encode, and a fixed interval would stack requests that
   // later land out of order and make the gauges jump through stale samples.
   (async function pollSystemStatsLoop() {
     for (;;) {

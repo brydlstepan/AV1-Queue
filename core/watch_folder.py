@@ -121,10 +121,9 @@ class _StableFileWaiter:
                 None,
             )
             if handle == INVALID_HANDLE or handle is None:
-                return ctypes.get_last_error() in (
-                    ERROR_SHARING_VIOLATION,
-                    ERROR_LOCK_VIOLATION,
-                ) or ctypes.GetLastError() in (
+                # windll.kernel32 isn't created with use_last_error=True, so read
+                # the error via the Win32 GetLastError directly.
+                return ctypes.windll.kernel32.GetLastError() in (
                     ERROR_SHARING_VIOLATION,
                     ERROR_LOCK_VIOLATION,
                 )

@@ -49,6 +49,34 @@ _DEFAULTS: Dict[str, Any] = {
 }
 
 
+# Per-job encode config applied to every newly added job, before any preset or
+# caller overrides. Single source of truth for these defaults (previously inline
+# literals in queue_manager.add_job). Values that should track a user-facing app
+# setting — autoname_output, the name templates, subtitle_search — are NOT
+# duplicated here; add_job overlays those from load_settings() so the setting
+# stays authoritative.
+JOB_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "crf": 30.0,
+    "preset": 4,
+    "resolution_target": "source",
+    "audio_bitrate_51": "320k",
+    "audio_bitrate_stereo": "160k",
+    "audio_format": "opus",
+    "audio_languages": ["eng", "ces"],
+    "audio_best_only": True,
+    "container": "mp4",
+    "test_mode": False,
+    "trim_start": "01:01:10",
+    "trim_end": "01:01:30",
+    "autocrop": True,
+    "ssimu2_post": True,
+    "extract_subtitles": True,
+    "subtitle_languages": ["eng", "ces"],
+    "subtitle_kinds": ["standard"],
+    "subtitle_strip_credits": True,
+}
+
+
 _cache_lock = threading.Lock()
 _cache: Dict[str, Any] | None = None
 _cache_stamp: tuple | None = None
@@ -106,4 +134,16 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         os.replace(str(tmp), str(path))
     except Exception as e:
         raise RuntimeError(f"Could not save settings: {e}") from e
+
+    # Prime the cache from the value just written. Relying on the (mtime_ns, size)
+    # stamp alone can serve stale data when a later save lands in the same clock
+    # tick with an identical size.
+    try:
+        st = path.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = None
+    with _cache_lock:
+        globals()["_cache"] = dict(data)
+        globals()["_cache_stamp"] = stamp
     return data

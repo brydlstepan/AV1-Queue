@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    One-click setup and updater for AV1 Queue Studio environment.
+    One-click setup and updater for AV1 Queue environment.
     Prefer launching via setup.bat in the repo root (double-click friendly).
 #>
 

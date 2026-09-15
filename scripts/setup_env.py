@@ -1,5 +1,5 @@
 """
-AV1 Queue Studio Setup Script
+AV1 Queue Setup Script
 Downloads and configures all required binaries, VapourSynth plugins, and Python packages.
 """
 

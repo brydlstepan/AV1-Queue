@@ -125,8 +125,10 @@ def main() -> int:
     del result, source, encoded
     gc.collect()
 
-    valid = [s if s == s else 0.0 for s in scores]  # NaN -> 0
-    valid = [max(0.0, float(s)) for s in valid]
+    # Drop frames that failed to score (NaN). Flooring them to 0.0 instead would
+    # sink `min`/`p15` and misreport a good encode as catastrophic.
+    dropped = sum(1 for s in scores if s != s)
+    valid = [max(0.0, float(s)) for s in scores if s == s]
     if not valid:
         print(json.dumps({"ok": False, "error": "No SSIMU2 scores produced"}))
         return 1
@@ -140,6 +142,7 @@ def main() -> int:
         "ok": True,
         "mode": used_mode,
         "frames": len(valid),
+        "dropped": dropped,
         "skip": skip,
         "avg": round(avg, 4),
         "p15": round(p15, 4),

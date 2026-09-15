@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Foreground launcher for AV1 Queue Studio server (visible console, for debugging).
+    Foreground launcher for AV1 Queue server (visible console, for debugging).
 #>
 
 $ErrorActionPreference = "Stop"
