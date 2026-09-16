@@ -17,8 +17,8 @@
     "film-grain": 8,
     "qm-min": 4,
     "qm-max": 14,
-    "noise": 30,
-    "noise-size": 1,
+    "noise": 25,
+    "noise-size": 2,
     "tune": 0
   }
 }

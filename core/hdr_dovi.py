@@ -3,12 +3,18 @@ HDR10 & Dolby Vision Metadata Processor
 Detects HDR10 / HDR10+ / Dolby Vision from ffprobe and builds
 SVT-AV1-Tritium color flags.
 
-Policy (see README.md "HDR & Dolby Vision"): Dolby Vision is never emitted. A DV source whose base
-layer stands on its own (profile 7 / 8.1, BL signal-compatibility id != 0) is
-encoded as HDR10 with its RPU discarded; a profile-5 source (compat id 0) is
-skipped upstream. So no RPU is extracted here — only HDR10 static signaling
-plus HDR10+ passthrough:
+Policy (see README.md "HDR & Dolby Vision"): a DV source whose base layer
+stands on its own (profile 7 / 8.1, BL signal-compatibility id != 0) is always
+encoded as HDR10; a profile-5 source (compat id 0) is skipped upstream. RPU
+passthrough for those P7/P8.1 sources is opt-in (settings.preserve_dovi_rpu,
+off by default) and best-effort — same degrade-gracefully posture as HDR10+:
   - HDR10+ JSON via hdr10plus_tool (if present) → --hdr10plus-json
+  - DoVi RPU via dovi_tool extract-rpu (if present and the setting is on) →
+    --dolby-vision-rpu. The raw extracted RPU is passed through unconverted:
+    dovi_tool's documented `convert` modes only retarget HEVC profiles (8.1
+    Blu-ray compat, MEL, 8.4), none of which apply to AV1/profile 10, and
+    SVT-AV1-Tritium's --dolby-vision-rpu is built on libdovi (the same
+    library dovi_tool uses) to do the AV1 packing itself.
 Otherwise falls back to static HDR10 color signaling (primaries / transfer / matrix).
 """
 
@@ -171,6 +177,7 @@ class HDRDoviProcessor:
         self.ffprobe = bin_dir / "ffprobe.exe"
         self.ffmpeg = bin_dir / "ffmpeg.exe"
         self.hdr10plus_tool = bin_dir / "hdr10plus_tool.exe"
+        self.dovi_tool = bin_dir / "dovi_tool.exe"
 
     def probe_video_streams(self, file_path: Path) -> Dict[str, Any]:
         """Probes video, audio, and subtitle streams using ffprobe JSON output."""
@@ -792,6 +799,126 @@ class HDRDoviProcessor:
                 pass
         log(f"HDR10+ JSON ready ({out_json.name}, {out_json.stat().st_size} bytes)")
         return out_json
+
+    @staticmethod
+    def verify_dovi_rpu(rpu_path: Path) -> Optional[str]:
+        """Validate an extracted DoVi RPU. Returns None when usable, else a reason."""
+        rpu_path = Path(rpu_path)
+        if not rpu_path.is_file():
+            return "DoVi RPU was not produced"
+        if rpu_path.stat().st_size < 64:
+            return "DoVi RPU file is implausibly small"
+        return None
+
+    def extract_dovi_rpu(
+        self,
+        source_file: Path,
+        out_rpu: Path,
+        progress_cb: Optional[Callable[[str], None]] = None,
+        percent_cb: Optional[Callable[[float], None]] = None,
+        duration_sec: Optional[float] = None,
+        trim_start: Optional[str] = None,
+        trim_end: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[Path]:
+        """
+        Extract a raw Dolby Vision RPU via dovi_tool (opt-in, settings.preserve_dovi_rpu).
+
+        Only meaningful for P7/P8.1 sources whose base layer is already valid HDR10 —
+        callers must gate this on dovi_compat_id != 0 and not profile 5, same as the
+        existing "base layer stands on its own" policy. Mirrors
+        extract_hdr10plus_json's demux-then-extract shape.
+        """
+        if not self.dovi_tool.is_file():
+            if progress_cb:
+                progress_cb(
+                    "dovi_tool.exe missing from bin/ — run setup to install "
+                    "(quietvoid/dovi_tool). DoVi RPU passthrough skipped."
+                )
+            return None
+        if not self.ffmpeg.is_file():
+            return None
+
+        source_file = Path(source_file)
+        out_rpu = Path(out_rpu)
+        out_rpu.parent.mkdir(parents=True, exist_ok=True)
+        hevc_path: Optional[Path] = None
+        extract_input = source_file
+
+        def log(msg: str):
+            if progress_cb:
+                progress_cb(msg)
+
+        suffix = source_file.suffix.lower()
+        # dovi_tool reads HEVC annex-B and Matroska natively
+        native_ok = suffix in (".mkv", ".hevc", ".h265", ".bin")
+        need_demux = (not native_ok) or (trim_start is not None or trim_end is not None)
+
+        if need_demux:
+            hevc_path = out_rpu.with_suffix(".hevc")
+
+            def map_hevc_pct(p: float):
+                if percent_cb:
+                    percent_cb(max(0.0, min(90.0, p * 0.90)))
+
+            log("Extracting HEVC bitstream for Dolby Vision RPU…")
+            ok = self._ffmpeg_extract_hevc_annexb(
+                source_file,
+                hevc_path,
+                log=log,
+                percent_cb=map_hevc_pct,
+                duration_sec=duration_sec,
+                trim_start=trim_start,
+                trim_end=trim_end,
+                cancel_event=cancel_event,
+                label="HEVC",
+            )
+            if not ok:
+                return None
+            extract_input = hevc_path
+        else:
+            if percent_cb:
+                try:
+                    percent_cb(50.0)
+                except Exception:
+                    pass
+
+        if cancel_event is not None and cancel_event.is_set():
+            if hevc_path:
+                try:
+                    hevc_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return None
+
+        log("Extracting Dolby Vision RPU (dovi_tool)…")
+        if percent_cb:
+            try:
+                percent_cb(92.0)
+            except Exception:
+                pass
+        dt = subprocess.run(
+            [str(self.dovi_tool), "extract-rpu", str(extract_input), "-o", str(out_rpu)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if hevc_path:
+            try:
+                hevc_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if dt.returncode != 0 or not out_rpu.is_file() or out_rpu.stat().st_size < 64:
+            log(f"dovi_tool extract-rpu failed: {(dt.stderr or dt.stdout or '')[-400:]}")
+            return None
+        if percent_cb:
+            try:
+                percent_cb(100.0)
+            except Exception:
+                pass
+        log(f"Dolby Vision RPU ready ({out_rpu.name}, {out_rpu.stat().st_size} bytes)")
+        return out_rpu
 
     @staticmethod
     def _ffmpeg_color_args(transfer_code: str, color_range: str = "tv") -> List[str]:

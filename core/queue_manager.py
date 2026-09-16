@@ -1121,6 +1121,27 @@ class QueueManager:
 
             hdr10plus_json_path: Optional[str] = None
 
+            # DoVi RPU passthrough — opt-in (settings.preserve_dovi_rpu, off by
+            # default). Only reachable here for P7/P8.1 sources: _dovi_skip_reason
+            # already sent P5/P4/unconfirmed DoVi through the skip/quarantine path
+            # above, so is_dovi at this point always means a safe base layer.
+            # Best-effort like HDR10+: a failure here degrades to plain HDR10
+            # rather than blocking the job — see README.md "HDR & Dolby Vision".
+            want_dovi_rpu = bool(
+                settings_live.get("preserve_dovi_rpu")
+                and hdr_analysis.get("is_dovi")
+                and svt_caps.get("dolby_vision_rpu")
+            )
+            if want_dovi_rpu and not (self.pipeline.bin_dir / "dovi_tool.exe").is_file():
+                append_log(
+                    "dovi_tool.exe missing from bin/ — run setup_env / setup.ps1 to install it "
+                    "— encoding without DoVi RPU passthrough",
+                    update_stage=False,
+                )
+                want_dovi_rpu = False
+
+            dovi_rpu_path: Optional[str] = None
+
             # Preserve inspector / default selection order
             selected_indices = [t["stream_index"] for t in ordered_audio]
             if ordered_audio:
@@ -1227,6 +1248,45 @@ class QueueManager:
                     append_log(
                         f"HDR10+ metadata unavailable ({json_problem}) — "
                         "encoding with static HDR10 color flags only",
+                        update_stage=False,
+                    )
+
+            # DoVi RPU from the same file we will encode (segment or full). Best-effort:
+            # any failure just logs and falls back to plain HDR10, never raises.
+            if want_dovi_rpu:
+                rpu_path_tmp = encode_temp_dir / "dovi_rpu.bin"
+                set_stage_progress(76.0, stage="Extracting Dolby Vision RPU")
+
+                def _dovi_pct(p: float):
+                    mapped = 76.0 + (max(0.0, min(100.0, p)) * 0.10)
+                    set_stage_progress(mapped, stage=f"Extracting DoVi RPU ({p:.0f}%)")
+
+                extracted_rpu = self.pipeline.hdr_processor.extract_dovi_rpu(
+                    encode_input,
+                    rpu_path_tmp,
+                    progress_cb=lambda m: append_log(m, update_stage=False),
+                    percent_cb=_dovi_pct,
+                    duration_sec=duration_sec if not cfg.get("test_mode") else None,
+                    cancel_event=self._cancel_event,
+                )
+                if self._cancel_event.is_set():
+                    self.pipeline.kill_all_processes()
+                    raise RuntimeError("Job cancelled.")
+                rpu_problem = (
+                    "DoVi RPU extract produced nothing"
+                    if not extracted_rpu
+                    else self.pipeline.hdr_processor.verify_dovi_rpu(extracted_rpu)
+                )
+                if rpu_problem is None:
+                    staged_rpu = stage_svt_meta_file(extracted_rpu, job_id, "dovi_rpu.bin")
+                    dovi_rpu_path = str(staged_rpu)
+                    staged_meta_paths.append(dovi_rpu_path)
+                    meta_inject.append("--dolby-vision-rpu")
+                    append_log(f"DoVi RPU staged for SVT: {staged_rpu}", update_stage=False)
+                else:
+                    append_log(
+                        f"DoVi RPU unavailable ({rpu_problem}) — "
+                        "encoding with HDR10 only (RPU passthrough skipped)",
                         update_stage=False,
                     )
 
@@ -1350,6 +1410,7 @@ class QueueManager:
                     resolution_target=encode_resolution,
                     extra_svt_params=extra_svt_params,
                     hdr10plus_json=hdr10plus_json_path,
+                    dolby_vision_rpu=dovi_rpu_path,
                     crop=crop,
                     progress_cb=encode_cb,
                     cancel_event=self._cancel_event,
@@ -1431,7 +1492,7 @@ class QueueManager:
             # 5. Optional post-encode SSIMU2 score (Pipeline Status → SSIMU2 post-encode score)
             # Final file is already published — cancel after this point still counts as COMPLETED.
             ssimu2_stats: Dict[str, Any] = {}
-            if cfg.get("ssimu2_post", True) and not self._cancel_event.is_set():
+            if cfg.get("ssimu2_post", False) and not self._cancel_event.is_set():
                 job["stage"] = "Measuring SSIMU2"
                 job["stage_num"] = 3
                 self.save_queue()

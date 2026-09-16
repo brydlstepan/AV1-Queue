@@ -298,9 +298,13 @@ def hdr_label(hdr_info: Optional[Dict[str, Any]]) -> str:
     """
     Filename HDR tag for the *encoded output*. "" for SDR (no tag written).
 
-    Dolby Vision is never emitted in the AV1 bitstream (RPU discarded; P5/P4
-    sources are skipped). DoVi sources that encode are tagged HDR10, or
-    HDR10plus when that layer is kept. Dual-layer DoVi+HDR10+ → "HDR10plus".
+    DoVi sources are always tagged by their HDR10 base layer here (P5/P4
+    sources are skipped upstream and never reach this). This holds even when
+    settings.preserve_dovi_rpu is on and RPU passthrough succeeds, since RPU
+    extraction is best-effort and this label is filename-stable regardless of
+    whether that succeeded for a given run — see README.md "HDR & Dolby
+    Vision". HDR10plus when that layer is kept; dual-layer DoVi+HDR10+ →
+    "HDR10plus" too.
     """
     info = hdr_info or {}
     if info.get("is_dovi"):

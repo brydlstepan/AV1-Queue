@@ -88,7 +88,7 @@ def get_latest_github_release(repo: str):
 
 def setup_binaries() -> None:
     print("=" * 60)
-    print("STEP 1: Setting up Core Binaries (SVT-AV1-Tritium, FFmpeg, hdr10plus_tool)")
+    print("STEP 1: Setting up Core Binaries (SVT-AV1-Tritium, FFmpeg, hdr10plus_tool, dovi_tool)")
     print("=" * 60)
 
     # 1. SVT-AV1-Tritium — vendored bin/svt/ is the normal path; download only if missing.
@@ -213,6 +213,39 @@ def setup_binaries() -> None:
                 note_error(f"Failed to install hdr10plus_tool: {e}")
         else:
             note_error("Could not find Windows release for hdr10plus_tool.")
+
+    # 2b. dovi_tool — optional, only used when "Preserve Dolby Vision RPU" is
+    # enabled in Settings (see README.md "HDR & Dolby Vision"). Missing this
+    # binary never fails setup; it just leaves that toggle non-functional.
+    dovi_tool_exe = BIN_DIR / "dovi_tool.exe"
+    if not dovi_tool_exe.exists():
+        try:
+            rel = get_latest_github_release("quietvoid/dovi_tool")
+        except Exception as e:
+            note_error(f"Could not query dovi_tool releases: {e}")
+            rel = {"assets": []}
+        asset_url = None
+        for a in rel.get("assets", []):
+            name = a.get("name") or ""
+            if "x86_64-pc-windows-msvc.zip" in name:
+                asset_url = a["browser_download_url"]
+                break
+        if asset_url:
+            try:
+                zip_dest = TEMP_DIR / "dovi_tool.zip"
+                download_file(asset_url, zip_dest, "dovi_tool")
+                extract_zip(zip_dest, TEMP_DIR / "dovi_tool_extracted")
+                for f in (TEMP_DIR / "dovi_tool_extracted").glob("**/dovi_tool.exe"):
+                    shutil.copy2(f, dovi_tool_exe)
+                    break
+                if dovi_tool_exe.exists():
+                    print(f"    Installed dovi_tool: {dovi_tool_exe}")
+                else:
+                    note_error("dovi_tool zip downloaded but exe not found inside.")
+            except Exception as e:
+                note_error(f"Failed to install dovi_tool: {e}")
+        else:
+            note_error("Could not find Windows release for dovi_tool.")
 
     # 3. FFmpeg & FFprobe (GyanD Essentials)
     ffmpeg_exe = BIN_DIR / "ffmpeg.exe"

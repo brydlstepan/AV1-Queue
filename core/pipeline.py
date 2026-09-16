@@ -796,7 +796,7 @@ class TranscodePipeline:
         Assigns encode targets: ≥5ch → 5.1 (incl. 7.1 downmix), 2ch → stereo, else mono.
         audio_format: "opus" (libopus) or "eac3".
         """
-        priority = [self.lang_family(x) for x in (languages or ["eng", "ces"])]
+        priority = [self.lang_family(x) for x in (languages or ["eng"])]
         fmt = normalize_audio_format(audio_format)
         ffmpeg_codec = "eac3" if fmt == "eac3" else "libopus"
 
@@ -858,11 +858,11 @@ class TranscodePipeline:
         best_only: bool = True,
     ) -> List[int]:
         """
-        Auto-pick tracks for preferred languages (default: English, then Czech).
+        Auto-pick tracks for preferred languages (default: English).
         If best_only, keep one best track per language when multiples exist.
         Otherwise include every matching track for those languages.
         """
-        priority = [self.lang_family(x) for x in (languages or ["eng", "ces"])]
+        priority = [self.lang_family(x) for x in (languages or ["eng"])]
         # Preserve first occurrence order while dropping duplicate families
         seen = set()
         langs: List[str] = []
@@ -960,7 +960,6 @@ class TranscodePipeline:
             return {
                 "file": out_file,
                 "language": self.iso639_2(lang),
-                "title": self.clean_audio_track_title(track.get("title", ""), input_file) or track.get("layout_desc", ""),
                 "channels": track["target_channels"],
                 "bitrate": track["target_bitrate"],
                 "audio_format": fmt,
@@ -996,6 +995,7 @@ class TranscodePipeline:
         resolution_target: str = "source",
         extra_svt_params: str = "",
         hdr10plus_json: Optional[str] = None,
+        dolby_vision_rpu: Optional[str] = None,
         crop: Optional[Dict[str, int]] = None,
         progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
         cancel_event: Optional[threading.Event] = None,
@@ -1032,6 +1032,8 @@ class TranscodePipeline:
         # Dedicated argv (not inside --svt-params) so spaces in paths survive
         if hdr10plus_json:
             cmd.extend(["--hdr10plus-json", str(hdr10plus_json)])
+        if dolby_vision_rpu:
+            cmd.extend(["--dolby-vision-rpu", str(dolby_vision_rpu)])
 
         # Environment with bin/ and vs/ in path and UTF-8 encoding
         env = os.environ.copy()
@@ -1314,8 +1316,6 @@ class TranscodePipeline:
                 cmd.extend([f"-disposition:a:{idx}", "default"])
             else:
                 cmd.extend([f"-disposition:a:{idx}", "0"])
-            if a.get("title"):
-                cmd.extend([f"-metadata:s:a:{idx}", f"title={a['title']}"])
 
         cmd.extend([
             "-sn",

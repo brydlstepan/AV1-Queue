@@ -305,8 +305,11 @@ body {
 .modal-window-scrollable #presetAudioSection .preset-settings-fields,
 .modal-window-scrollable #presetAdvancedSection .preset-advanced-fields,
 .modal-window-scrollable #pipelineGeneralSection .preset-settings-fields,
+.modal-window-scrollable #pipelineAppSection .preset-settings-fields,
 .modal-window-scrollable #pipelineAudioSection .preset-settings-fields,
-.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields {
+.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields,
+.modal-window-scrollable #pipelineNamingSection .preset-settings-fields,
+.modal-window-scrollable #pipelineWatchSection .preset-settings-fields {
   scrollbar-width: thin;
   scrollbar-color: var(--border-subtle) transparent;
 }
@@ -318,8 +321,11 @@ body {
 .modal-window-scrollable #presetAudioSection .preset-settings-fields::-webkit-scrollbar,
 .modal-window-scrollable #presetAdvancedSection .preset-advanced-fields::-webkit-scrollbar,
 .modal-window-scrollable #pipelineGeneralSection .preset-settings-fields::-webkit-scrollbar,
+.modal-window-scrollable #pipelineAppSection .preset-settings-fields::-webkit-scrollbar,
 .modal-window-scrollable #pipelineAudioSection .preset-settings-fields::-webkit-scrollbar,
-.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar {
+.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar,
+.modal-window-scrollable #pipelineNamingSection .preset-settings-fields::-webkit-scrollbar,
+.modal-window-scrollable #pipelineWatchSection .preset-settings-fields::-webkit-scrollbar {
   width: var(--scrollbar-size);
 }
 
@@ -330,8 +336,11 @@ body {
 .modal-window-scrollable #presetAudioSection .preset-settings-fields::-webkit-scrollbar-track,
 .modal-window-scrollable #presetAdvancedSection .preset-advanced-fields::-webkit-scrollbar-track,
 .modal-window-scrollable #pipelineGeneralSection .preset-settings-fields::-webkit-scrollbar-track,
+.modal-window-scrollable #pipelineAppSection .preset-settings-fields::-webkit-scrollbar-track,
 .modal-window-scrollable #pipelineAudioSection .preset-settings-fields::-webkit-scrollbar-track,
-.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar-track {
+.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar-track,
+.modal-window-scrollable #pipelineNamingSection .preset-settings-fields::-webkit-scrollbar-track,
+.modal-window-scrollable #pipelineWatchSection .preset-settings-fields::-webkit-scrollbar-track {
   background: transparent;
 }
 
@@ -342,8 +351,11 @@ body {
 .modal-window-scrollable #presetAudioSection .preset-settings-fields::-webkit-scrollbar-thumb,
 .modal-window-scrollable #presetAdvancedSection .preset-advanced-fields::-webkit-scrollbar-thumb,
 .modal-window-scrollable #pipelineGeneralSection .preset-settings-fields::-webkit-scrollbar-thumb,
+.modal-window-scrollable #pipelineAppSection .preset-settings-fields::-webkit-scrollbar-thumb,
 .modal-window-scrollable #pipelineAudioSection .preset-settings-fields::-webkit-scrollbar-thumb,
-.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar-thumb {
+.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar-thumb,
+.modal-window-scrollable #pipelineNamingSection .preset-settings-fields::-webkit-scrollbar-thumb,
+.modal-window-scrollable #pipelineWatchSection .preset-settings-fields::-webkit-scrollbar-thumb {
   background: var(--border-subtle);
   border-radius: var(--radius-full);
   border: 2px solid transparent;
@@ -357,8 +369,11 @@ body {
 .modal-window-scrollable #presetAudioSection .preset-settings-fields::-webkit-scrollbar-thumb:hover,
 .modal-window-scrollable #presetAdvancedSection .preset-advanced-fields::-webkit-scrollbar-thumb:hover,
 .modal-window-scrollable #pipelineGeneralSection .preset-settings-fields::-webkit-scrollbar-thumb:hover,
+.modal-window-scrollable #pipelineAppSection .preset-settings-fields::-webkit-scrollbar-thumb:hover,
 .modal-window-scrollable #pipelineAudioSection .preset-settings-fields::-webkit-scrollbar-thumb:hover,
-.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar-thumb:hover {
+.modal-window-scrollable #pipelineSubtitlesSection .preset-settings-fields::-webkit-scrollbar-thumb:hover,
+.modal-window-scrollable #pipelineNamingSection .preset-settings-fields::-webkit-scrollbar-thumb:hover,
+.modal-window-scrollable #pipelineWatchSection .preset-settings-fields::-webkit-scrollbar-thumb:hover {
   background: var(--border-hover);
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -1790,6 +1805,31 @@ select.form-input {
   padding-top: 28px;
   padding-right: calc(24px - var(--scrollbar-size));
   padding-bottom: 28px;
+}
+
+/* Pipeline settings — uniform top inset for the first row/group in every tab */
+.modal-window-scrollable #pipelineGeneralSection > .preset-settings-fields > .setting-row:first-child,
+.modal-window-scrollable #pipelineAppSection > .preset-settings-fields > .setting-row:first-child,
+.modal-window-scrollable #pipelineAudioSection > .preset-settings-fields > .setting-row:first-child {
+  min-height: 59px;
+  box-sizing: border-box;
+}
+
+.modal-window-scrollable #pipelineGeneralSection > .preset-settings-fields > .setting-row--stack:first-child .setting-row-head,
+.modal-window-scrollable #pipelineAppSection > .preset-settings-fields > .setting-row--stack:first-child .setting-row-head,
+.modal-window-scrollable #pipelineAudioSection > .preset-settings-fields > .setting-row--stack:first-child .setting-row-head,
+.modal-window-scrollable #pipelineSubtitlesSection > .preset-settings-fields > .setting-row--stack:first-child .setting-row-head,
+.modal-window-scrollable #pipelineNamingSection > .preset-settings-fields > .setting-row--stack:first-child .setting-row-head,
+.modal-window-scrollable #pipelineWatchSection > .preset-settings-fields > .setting-row--stack:first-child .setting-row-head {
+  display: flex;
+  min-height: 39px;
+  box-sizing: border-box;
+  align-items: center;
+}
+
+/* Match first-label text position on other tabs (not the tall flex box top). */
+.modal-window-scrollable #pipelineSubtitlesSection > .preset-settings-fields > #pipelineSubtitleTypesGroup:first-child > .setting-group-heading {
+  padding-top: 20px;
 }
 
 .modal-window-scrollable #presetAdvancedSection .preset-advanced-fields {
