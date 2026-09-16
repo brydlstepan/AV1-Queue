@@ -10,7 +10,7 @@ Local **AV1 encoding queue** with a browser UI. Wraps [SVT-AV1-Tritium](https://
 - **Queue studio** — Drag/drop or browse files, reorder, start/stop, edit queued jobs, reset cancelled/failed jobs
 - **Presets** — CRF/preset/tune, Opus bitrates, SVT-AV1-Tritium advanced params (non-defaults → `--svt-params`)
 - **Audio** — Preferred languages + best-track-only in presets; Opus 5.1 (incl. 7.1 downmix) / stereo; video-only if none selected
-- **HDR / Dolby Vision** — See [Format philosophy → HDR & Dolby Vision](#hdr--dolby-vision) (HDR10 / HLG / HDR10+ passthrough; DoVi base layer → HDR10; P5 skipped; P4 / unconfirmed filename-DoVi / unknown profile-compat quarantined)
+- **HDR / Dolby Vision** — See [Format philosophy → HDR & Dolby Vision](#hdr--dolby-vision) (HDR10 / HLG / HDR10+ passthrough; DoVi base layer → HDR10, with opt-in DoVi RPU passthrough via `dovi_tool`; P5 skipped; P4 / unconfirmed filename-DoVi / unknown profile-compat quarantined)
 
 - **Test mode** — Short time-range encodes for quick preset checks
 - **Pipeline options** — SSIMU2 CPU/GPU/auto, autocrop, optional post-encode score, background subtitle extract after encode
@@ -29,7 +29,8 @@ Local **AV1 encoding queue** with a browser UI. Wraps [SVT-AV1-Tritium](https://
 | Encode | **SvtAv1EncApp** (SVT-AV1-Tritium), direct single-pass |
 | Video filter graph | **VapourSynth** + **FFMS2**, **vszip** (CPU metrics), **Vship** (NVIDIA GPU metrics) |
 | Mux / audio / probe | **FFmpeg** / **ffprobe** (libopus) |
-| HDR10+ passthrough | **hdr10plus_tool** (quietvoid) extracts the HDR10+ JSON; SVT-AV1-Tritium injects it via `--hdr10plus-json` (HDR10+ and Dolby Vision RPU passthrough both ship enabled by default in Tritium's prebuilt Windows binaries). Dolby Vision is detected but never emitted |
+| HDR10+ passthrough | **hdr10plus_tool** (quietvoid) extracts the HDR10+ JSON; SVT-AV1-Tritium injects it via `--hdr10plus-json` (ships enabled by default in Tritium's prebuilt Windows binaries) |
+| Dolby Vision RPU passthrough (opt-in) | **dovi_tool** (quietvoid) extracts the raw RPU (`extract-rpu`, unconverted — dovi_tool's `convert` modes only retarget HEVC profiles and don't apply to AV1); SVT-AV1-Tritium injects it via `--dolby-vision-rpu` (uses `libdovi`, the same library dovi_tool is built on, to pack it into the AV1 bitstream). Off by default — see [Settings → Preserve Dolby Vision RPU](#hdr--dolby-vision) |
 | System metrics | **psutil** |
 
 Python packages (installed into `vs/python-env/` by setup from `requirements.txt`): `fastapi`, `uvicorn[standard]`, `websockets`, `psutil`, `vapoursynth`, `vstools`, `vsjetpack`, `rich`, `py7zr`, …
@@ -85,7 +86,7 @@ Or run it in the foreground with a visible console (for debugging — live log o
 AV1-Queue/
 ├── setup.bat                  # Double-click installer (console stays open)
 ├── runGUI.bat                 # Launch server as a background tray-icon process
-├── bin/                       # ffmpeg, ffprobe, hdr10plus_tool; SVT under bin/svt/
+├── bin/                       # ffmpeg, ffprobe, hdr10plus_tool, dovi_tool; SVT under bin/svt/
 ├── vs/
 │   ├── portable.vs
 │   ├── python-env/            # Isolated Python venv (VS plugins also autoload here)
@@ -144,28 +145,36 @@ Opus beats E-AC-3 on quality at a given bitrate and is royalty-free, so it's the
 
 ### HDR & Dolby Vision
 
-The single rule: **can the source's base layer stand on its own?** If yes, encode it and preserve whatever dynamic metadata it carries; if no, leave the original untouched. Dolby Vision is never emitted. The `dv_bl_signal_compatibility_id` ffprobe field answers this — 0 means no, anything else means yes. Profile 7 / 8.1 base layers are already valid HDR10, so the RPU is dropped cleanly. Profile 5's base layer is stored in DV's IPT-PQc2 colourspace, so tagging it HDR10 would bake in a permanent colour cast and there's no cheap conversion — so P5 sources are skipped and kept as-is. DV over AV1 would require Profile 10, which almost nothing plays today, and DV metadata cannot be converted to HDR10+, so the untouched P5 original stays the best-preserved artifact.
+The single rule: **can the source's base layer stand on its own?** If yes, encode it and preserve whatever dynamic metadata it carries; if no, leave the original untouched. The `dv_bl_signal_compatibility_id` ffprobe field answers this — 0 means no, anything else means yes. Profile 7 / 8.1 base layers are already valid HDR10, so they always encode as HDR10 regardless of whether the RPU is also carried. Profile 5's base layer is stored in DV's IPT-PQc2 colourspace, so tagging it HDR10 would bake in a permanent colour cast and there's no cheap conversion — so P5 sources are skipped and kept as-is, with or without RPU passthrough enabled.
 
-| Source | Base layer standalone? | Output |
-|--------|------------------------|--------|
-| SDR (BT.709) | yes | SDR AV1 |
-| HLG | yes | HLG AV1 (ARIB B67 transfer preserved) |
-| HDR10 (static) | yes | HDR10 AV1 (MDL + MaxCLL/MaxFALL passed to SVT) |
-| HDR10+ | yes | **HDR10+ AV1** (`--hdr10plus-json` passthrough) |
-| DoVi P8.1 / P7 | yes | HDR10 AV1 — base layer encoded, **RPU discarded** |
-| DoVi P8.1 / P7 + HDR10+ | yes | HDR10+ AV1 — RPU discarded, HDR10+ JSON kept |
-| DoVi **P5** (compat 0) | **no** | **skipped** — original file left untouched |
-| DoVi P4 (legacy) | unknown | **quarantined** for manual review |
-| Filename says DoVi, not probe-confirmed | unknown | **quarantined** — P5 cannot be ruled out |
-| DoVi confirmed, profile/compat unknown | unknown | **quarantined** for manual review |
+By default the RPU is discarded — DoVi playback support on AV1 (profile 10) is still thin, so this is a reasonable default today. But since a non-DoVi player simply reads the HDR10 base layer and ignores an RPU it doesn't understand, carrying the RPU alongside costs nothing on unsupported devices and only helps on the (currently rare, likely growing) DoVi-capable AV1 clients. **Settings → Preserve Dolby Vision RPU** turns this on: `dovi_tool` extracts the raw RPU and SVT-AV1-Tritium injects it into the AV1 bitstream via `--dolby-vision-rpu`, alongside the HDR10 base layer that's encoded either way. It's opt-in and best-effort — any failure (missing `dovi_tool`, unusable RPU, SVT rejecting it) just falls back to plain HDR10 with a log line, the same degrade-gracefully posture as HDR10+ JSON, never a hard failure. It doesn't change P5/P4/quarantine handling at all, since those rows aren't about the RPU.
+
+| Source | Base layer standalone? | Output (RPU passthrough off, default) | Output (RPU passthrough on) |
+|--------|------------------------|----------------------------------------|-------------------------------|
+| SDR (BT.709) | yes | SDR AV1 | unchanged (no DoVi to carry) |
+| HLG | yes | HLG AV1 (ARIB B67 transfer preserved) | unchanged |
+| HDR10 (static) | yes | HDR10 AV1 (MDL + MaxCLL/MaxFALL passed to SVT) | unchanged |
+| HDR10+ | yes | **HDR10+ AV1** (`--hdr10plus-json` passthrough) | unchanged |
+| DoVi P8.1 / P7 | yes | HDR10 AV1 — base layer encoded, RPU discarded | HDR10 AV1 **+ DoVi RPU** (`--dolby-vision-rpu`); non-DoVi clients still just see the HDR10 layer |
+| DoVi P8.1 / P7 + HDR10+ | yes | HDR10+ AV1 — RPU discarded, HDR10+ JSON kept | HDR10+ AV1 **+ DoVi RPU** — both metadata tracks carried |
+| DoVi **P5** (compat 0) | **no** | **skipped** — original file left untouched | unchanged — RPU passthrough can't help; the base layer itself isn't valid HDR10 |
+| DoVi P4 (legacy) | unknown | **quarantined** for manual review | unchanged |
+| Filename says DoVi, not probe-confirmed | unknown | **quarantined** — P5 cannot be ruled out | unchanged |
+| DoVi confirmed, profile/compat unknown | unknown | **quarantined** for manual review | unchanged |
 
 #### HDR10+ passthrough
 
 HDR10+ can be carried through but not created. It needs both a libhdr10plus-enabled SVT-AV1-Tritium binary (`--hdr10plus-json`, shipped by default in Tritium's Windows releases) and the HDR10+ JSON extracted by `hdr10plus_tool` from frame SEI. If either is missing, an HDR10+ source encodes as plain HDR10 (or fails preflight when "Fail when HDR metadata cannot be preserved" is on).
 
+#### Dolby Vision RPU passthrough (opt-in)
+
+Off by default; enable via **Settings → Preserve Dolby Vision RPU**. Needs `bin/dovi_tool.exe` (installed by `setup_env.py`, same as `hdr10plus_tool` — quietvoid's release assets) and an SVT-AV1-Tritium build with `--dolby-vision-rpu` (`enable-libdovi`, on by default in Tritium's Windows releases). The RPU is extracted with `dovi_tool extract-rpu` and passed to SVT **unconverted** — `dovi_tool`'s documented `convert` modes only retarget HEVC-specific profiles (8.1 Blu-ray compatibility, MEL, 8.4), none of which apply to AV1/profile 10, and `--dolby-vision-rpu` is built on `libdovi` (the same library `dovi_tool` uses) to do the AV1 packing itself. Never blocks a job — HDR strict mode does not apply to it, since the worst case (RPU unavailable) is identical to the feature being off.
+
+Untested claim to verify before relying on this in production: whether the resulting DoVi-tagged AV1 track actually survives an MP4 remux losslessly on this project's ffmpeg build (MKV is the more established container for DoVi+AV1 muxing). Worth a real DoVi P8.1 sample run before trusting this for a library-wide re-encode.
+
 #### Sourcing guidance
 
-Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8.1 (base layer drops cleanly to HDR10) → HDR10 / HLG → SDR → DV P5 (last resort; skipped and left in its original form).
+Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8.1 (base layer drops cleanly to HDR10, RPU optionally carried too) → HDR10 / HLG → SDR → DV P5 (last resort; skipped and left in its original form).
 
 ---
 
@@ -175,6 +184,7 @@ Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8
 |---------|------|------|
 | SVT-AV1-Tritium | AV1 encoder (direct single-pass, HDR10+/DoVi RPU passthrough) | [Uranite/svt-av1-tritium](https://github.com/Uranite/svt-av1-tritium) |
 | hdr10plus_tool | HDR10+ JSON extract / verify | [quietvoid/hdr10plus_tool](https://github.com/quietvoid/hdr10plus_tool) |
+| dovi_tool | Dolby Vision RPU extract (opt-in passthrough) | [quietvoid/dovi_tool](https://github.com/quietvoid/dovi_tool) |
 | FFmpeg | Decode, Opus, mux | [GyanD/codexffmpeg](https://github.com/GyanD/codexffmpeg) (essentials build used by setup) |
 | Vship | GPU SSIMULACRA2 | [Line-fr/Vship](https://codeberg.org/Line-fr/Vship) |
 | vapoursynth-zip (vszip) | CPU metrics | [dnjulek/vapoursynth-zip](https://github.com/dnjulek/vapoursynth-zip) |

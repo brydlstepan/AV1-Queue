@@ -54,6 +54,7 @@ parser.add_argument("--preset", type=int, default=4, help="SVT-AV1 --preset valu
 parser.add_argument("--crf", type=float, default=30.0, help="SVT-AV1 --crf value (1-70, 0.25 steps) | Default: 30")
 parser.add_argument("--svt-params", default="", help="Extra raw SvtAv1EncApp flags (tune, film-grain, psychovisual overrides, HDR flags, etc.)")
 parser.add_argument("--hdr10plus-json", default=None, help="Path to HDR10+ JSON (passed through to SvtAv1EncApp)")
+parser.add_argument("--dolby-vision-rpu", default=None, help="Path to a profile-10 DoVi RPU binary (passed through to SvtAv1EncApp)")
 parser.add_argument("--target-height", type=int, default=0, help="Downscale to this height if source is larger (0 = keep source resolution)")
 parser.add_argument("--crop", default="", help="Black-bar crop as left,top,right,bottom pixels (even values recommended)")
 parser.add_argument("--verbose", action="store_true", help="Enable more verbosity | Default: not active")
@@ -78,6 +79,7 @@ preset = args.preset
 crf = args.crf
 svt_params = args.svt_params or ""
 hdr10plus_json = args.hdr10plus_json
+dolby_vision_rpu = args.dolby_vision_rpu
 target_height = int(args.target_height or 0)
 crop_left = crop_top = crop_right = crop_bottom = 0
 if args.crop:
@@ -184,6 +186,8 @@ def encode() -> None:
     encoder_params_list = split_encoder_params(encoder_params)
     if hdr10plus_json:
         encoder_params_list.extend(["--hdr10plus-json", str(hdr10plus_json)])
+    if dolby_vision_rpu:
+        encoder_params_list.extend(["--dolby-vision-rpu", str(dolby_vision_rpu)])
 
     svt_cmd = [
         "SvtAv1EncApp",

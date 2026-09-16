@@ -160,12 +160,14 @@ class WatchFolderService:
         queue_mgr,
         load_presets_fn,
         default_preset_id: str = "",
+        output_dir: Optional[str] = None,
         log=print,
     ):
         self.watch_dir = Path(watch_dir)
         self.queue_mgr = queue_mgr
         self.load_presets_fn = load_presets_fn
         self.default_preset_id = default_preset_id
+        self.output_dir = Path(output_dir).resolve() if output_dir else None
         self.log = log
         self._observer: Optional[Observer] = None
         self._pending: Dict[str, threading.Thread] = {}
@@ -236,7 +238,19 @@ class WatchFolderService:
             # watch, so it's never re-scanned) — separate from encoded_sources/,
             # where the verified original source is moved to on completion.
             ext = "webm" if str(config.get("container", "mp4")).lower() == "webm" else "mp4"
-            out_dir = self.watch_dir / ENCODED_DIRNAME
+            out_dir = self.output_dir if self.output_dir else (self.watch_dir / ENCODED_DIRNAME)
+            if self.output_dir:
+                try:
+                    watch_resolved = self.watch_dir.resolve()
+                    out_resolved = out_dir.resolve()
+                    if watch_resolved == out_resolved or watch_resolved in out_resolved.parents:
+                        self.log(
+                            f"[watch] Output folder must not be inside the watched folder — "
+                            f"using {ENCODED_DIRNAME}/ instead ({out_dir})"
+                        )
+                        out_dir = self.watch_dir / ENCODED_DIRNAME
+                except OSError:
+                    pass
             out_dir.mkdir(parents=True, exist_ok=True)
             output_path = out_dir / f"{path.stem}_av1_boost.{ext}"
 

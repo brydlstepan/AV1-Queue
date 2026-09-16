@@ -57,14 +57,14 @@ def get_cpu_name() -> str:
 
 
 def detect_svt_caps(bin_dir: Optional[Path] = None) -> Optional[Dict[str, bool]]:
-    """Probe SvtAv1EncApp --help for the one capability the app gates on:
-    HDR10+ passthrough (--hdr10plus-json). Dolby Vision RPU passthrough
-    (--dolby-vision-rpu) exists in Tritium too but is never emitted — DoVi is
-    policy-disabled — so it isn't worth probing. Tritium has no --full-help;
-    --help alone already lists everything."""
+    """Probe SvtAv1EncApp --help for the capabilities the app gates on:
+    HDR10+ passthrough (--hdr10plus-json) and Dolby Vision RPU passthrough
+    (--dolby-vision-rpu, used only when the user opts into preserve_dovi_rpu —
+    see README.md "HDR & Dolby Vision"). Tritium has no --full-help; --help
+    alone already lists everything."""
     root = Path(bin_dir) if bin_dir else BIN_DIR
     exe = root / "SvtAv1EncApp.exe"
-    caps = {"hdr10plus_json": False}
+    caps = {"hdr10plus_json": False, "dolby_vision_rpu": False}
     if not exe.is_file():
         return caps
     try:
@@ -81,6 +81,7 @@ def detect_svt_caps(bin_dir: Optional[Path] = None) -> Optional[Dict[str, bool]]
         )
         low = ((r.stdout or "") + "\n" + (r.stderr or "")).lower()
         caps["hdr10plus_json"] = "--hdr10plus-json" in low
+        caps["dolby_vision_rpu"] = "--dolby-vision-rpu" in low
     except Exception as e:
         # Returning the default here would persist a false "no HDR10+ support"
         # into the marker and fail every HDR10+ job at preflight.

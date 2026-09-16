@@ -108,6 +108,7 @@ def _restart_watch_service():
             queue_mgr,
             load_presets,
             default_preset_id=settings.get("watch_folder_default_preset", ""),
+            output_dir=settings.get("watch_folder_output_path") or None,
         )
         service.start()
         _watch_service = service
@@ -167,6 +168,7 @@ class SettingsUpdateRequest(BaseModel):
     svt_low_memory: Optional[bool] = None
     ssimu2_target: Optional[float] = None
     hdr_strict: Optional[bool] = None
+    preserve_dovi_rpu: Optional[bool] = None
     tmdb_lookup: Optional[bool] = None
     tmdb_api_key: Optional[str] = None
     subtitle_search: Optional[bool] = None
@@ -175,6 +177,7 @@ class SettingsUpdateRequest(BaseModel):
     opensubtitles_password: Optional[str] = None
     watch_folder_enabled: Optional[bool] = None
     watch_folder_path: Optional[str] = None
+    watch_folder_output_path: Optional[str] = None
     watch_folder_default_preset: Optional[str] = None
     hour_format: Optional[str] = None
     allow_builtin_preset_edits: Optional[bool] = None

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=pass17">
+  <link rel="stylesheet" href="/static/app.css?v=pass19">
 </head>
 <body>
   <div class="app-container">
@@ -489,11 +489,11 @@ Default: PSNR</span>
             <button type="button" class="tab-btn" id="pipelineTabAudio">Audio</button>
             <button type="button" class="tab-btn" id="pipelineTabSubtitles">Subtitles</button>
             <button type="button" class="tab-btn" id="pipelineTabNaming">Naming</button>
-            <button type="button" class="tab-btn" id="pipelineTabWatch">Watch folder</button>
+            <button type="button" class="tab-btn" id="pipelineTabWatch">Folders</button>
           </div>
 
           <div id="pipelineGeneralSection">
-            <div class="preset-settings-fields">
+            <div class="preset-settings-fields scroll-thin">
               <div class="setting-row is-default" data-pipeline-key="container">
                 <label class="setting-label" for="globalContainer">
                   <span class="setting-label-text">Output container</span>
@@ -542,6 +542,22 @@ Default: PSNR</span>
                   </button>
                 </div>
               </div>
+              <div class="setting-row is-default" data-pipeline-key="preserveDoviRpu">
+                <label class="setting-label" for="globalPreserveDoviRpu">
+                  <span class="setting-label-text">Preserve Dolby Vision RPU (experimental)</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">For DoVi P7/P8.1 sources (base layer already valid HDR10), extracts the RPU with dovi_tool, converts it to profile 10, and passes it to SVT-AV1-Tritium via --dolby-vision-rpu alongside the HDR10 base layer. Non-DoVi clients read the HDR10 layer and ignore the RPU, so this never hurts compatibility — it only helps DoVi-capable AV1 clients, which are still rare today. P5 sources still can't be helped by this and are always skipped; requires bin/dovi_tool.exe (installed by setup) and a matching SVT-AV1-Tritium build.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalPreserveDoviRpu" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalPreserveDoviRpu" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
+                </div>
+              </div>
               <div class="setting-row is-default" data-pipeline-key="ssimu2Post">
                 <label class="setting-label" for="globalSsimu2Post">
                   <span class="setting-label-text">SSIMU2 post-encode score</span>
@@ -550,11 +566,11 @@ Default: PSNR</span>
                     <span class="setting-help-tip" role="tooltip">After each encode, compare source vs final AV1 and store avg / p15 / min on Finished Encodes.</span>
                   </span>
                 </label>
-                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSsimu2Post" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalSsimu2Post" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
                 <div class="setting-control">
-                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalSsimu2Post" role="switch" aria-checked="true" data-default="true">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalSsimu2Post" role="switch" aria-checked="false" data-default="false">
                     <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
-                    <span class="svt-toggle-label">On</span>
+                    <span class="svt-toggle-label">Off</span>
                   </button>
                 </div>
               </div>
@@ -632,7 +648,7 @@ Default: PSNR</span>
           </div>
 
           <div id="pipelineAppSection" class="hidden">
-            <div class="preset-settings-fields">
+            <div class="preset-settings-fields scroll-thin">
               <div class="setting-row is-default" data-pipeline-key="hourFormat">
                 <label class="setting-label" for="globalHourFormat">
                   <span class="setting-label-text">Hour format</span>
@@ -669,7 +685,7 @@ Default: PSNR</span>
           </div>
 
           <div id="pipelineAudioSection" class="hidden">
-            <div class="preset-settings-fields">
+            <div class="preset-settings-fields scroll-thin">
               <div class="setting-row is-default" data-pipeline-key="audioFormat">
                 <label class="setting-label" for="globalAudioFormat">
                   <span class="setting-label-text">Audio format</span>
@@ -726,7 +742,7 @@ Default: PSNR</span>
           </div>
 
           <div id="pipelineSubtitlesSection" class="hidden">
-            <div class="preset-settings-fields">
+            <div class="preset-settings-fields scroll-thin">
               <div id="pipelineSubtitleTypesGroup">
                 <div class="setting-group-heading">Desired subtitle types</div>
                 <div class="setting-row setting-row--grouped is-default" data-pipeline-key="subKindStandard" id="pipelineSubKindStandardRow">
@@ -939,12 +955,26 @@ Default: PSNR</span>
 
           <div id="pipelineWatchSection" class="hidden">
             <div class="preset-settings-fields scroll-thin">
+              <div class="setting-row setting-row--stack" data-pipeline-key="watchFolderOutputPath">
+                <div class="setting-row-head">
+                  <label class="setting-label" for="settingsWatchFolderOutputPath">
+                    <span class="setting-label-text">Output folder path</span>
+                    <span class="setting-help" tabindex="0" aria-label="Help">
+                      <span class="setting-help-icon">?</span>
+                      <span class="setting-help-tip" role="tooltip">Where finished AV1 files are written for watch-folder jobs. Leave blank to use an encoded subfolder inside the watched folder. Must not be inside the watched folder itself.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="setting-control">
+                  <input type="text" id="settingsWatchFolderOutputPath" class="form-input" placeholder="e.g. D:\Encoded (blank = watched folder\encoded)" autocomplete="off">
+                </div>
+              </div>
               <div class="setting-row is-default" data-pipeline-key="watchFolderEnabled">
                 <label class="setting-label" for="globalWatchFolderEnabled">
                   <span class="setting-label-text">Watch folder auto-queue</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">Watches a folder for new video files and queues them automatically, in place. A filename containing "preset-&lt;id&gt;" (e.g. movie.preset-4k_standard.mkv) selects that preset; otherwise the default preset below is used. The finished AV1 file is written to an encoded subfolder; once that output is verified, the original source is moved into an encoded_sources subfolder.</span>
+                    <span class="setting-help-tip" role="tooltip">Watches a folder for new video files and queues them automatically, in place. A filename containing "preset-&lt;id&gt;" (e.g. movie.preset-4k_standard.mkv) selects that preset; otherwise the default preset below is used. The finished AV1 file is written to the output folder above (or an encoded subfolder when left blank); once that output is verified, the original source is moved into an encoded_sources subfolder.</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default pipeline-reset" data-target="globalWatchFolderEnabled" title="Reset to default (Off)" aria-label="Reset to default">↺</button>

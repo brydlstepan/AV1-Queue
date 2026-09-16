@@ -414,8 +414,8 @@ document.addEventListener("DOMContentLoaded", () => {
     { code: "rus", label: "Russian" },
     { code: "und", label: "Undetermined" }
   ];
-  const DEFAULT_AUDIO_LANGUAGES = ["eng", "ces"];
-  const DEFAULT_SUB_LANGUAGES = ["eng", "ces"];
+  const DEFAULT_AUDIO_LANGUAGES = ["eng"];
+  const DEFAULT_SUB_LANGUAGES = ["eng"];
   const ALL_SUB_KINDS = ["standard", "forced", "sdh"];
   const DEFAULT_SUB_KINDS = ["standard"];
 
@@ -510,7 +510,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return el.getAttribute("aria-checked") === "true";
     }
     const saved = localStorage.getItem(SSIMU2_POST_KEY);
-    return saved === null ? true : saved === "1";
+    return saved === null ? false : saved === "1";
   }
 
   function getExtractSubtitlesEnabled() {
@@ -723,7 +723,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   wireLocalStoragePipelineToggle(document.getElementById("globalAutocrop"), AUTOCROP_KEY, true);
-  wireLocalStoragePipelineToggle(document.getElementById("globalSsimu2Post"), SSIMU2_POST_KEY, true);
+  wireLocalStoragePipelineToggle(document.getElementById("globalSsimu2Post"), SSIMU2_POST_KEY, false);
   wireLocalStoragePipelineToggle(document.getElementById("globalExtractSubtitles"), EXTRACT_SUBS_KEY, true, syncExtractSubsDependentRows);
   wireLocalStoragePipelineToggle(document.getElementById("globalStripSubCredits"), STRIP_SUB_CREDITS_KEY, true);
   wireLocalStoragePipelineToggle(document.getElementById("globalAudioBestOnly"), AUDIO_BEST_ONLY_KEY, true);
@@ -843,6 +843,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ssimu2_target: 80,
     tmdb_lookup: true,
     hdr_strict: true,
+    preserve_dovi_rpu: false,
     tmdb_api_key: "",
     subtitle_search: false,
     opensubtitles_api_key: "",
@@ -850,6 +851,7 @@ document.addEventListener("DOMContentLoaded", () => {
     opensubtitles_password: "",
     watch_folder_enabled: false,
     watch_folder_path: "",
+    watch_folder_output_path: "",
     watch_folder_default_preset: "",
     hour_format: "24",
     allow_builtin_preset_edits: false
@@ -895,6 +897,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (hdrStrict) {
       setPipelineToggle(hdrStrict, appSettings.hdr_strict !== false);
       syncPipelineFieldRow(hdrStrict);
+    }
+    const preserveDoviRpu = document.getElementById("globalPreserveDoviRpu");
+    if (preserveDoviRpu) {
+      setPipelineToggle(preserveDoviRpu, !!appSettings.preserve_dovi_rpu);
+      syncPipelineFieldRow(preserveDoviRpu);
     }
     const hourFormat = document.getElementById("globalHourFormat");
     if (hourFormat) {
@@ -951,6 +958,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const watchPath = document.getElementById("settingsWatchFolderPath");
     if (watchPath) watchPath.value = appSettings.watch_folder_path || "";
+    const watchOutputPath = document.getElementById("settingsWatchFolderOutputPath");
+    if (watchOutputPath) watchOutputPath.value = appSettings.watch_folder_output_path || "";
     const watchPreset = document.getElementById("settingsWatchFolderPreset");
     if (watchPreset) {
       watchPreset.innerHTML = `<option value="">(No default — use built-in defaults)</option>` +
@@ -1026,8 +1035,8 @@ document.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem(AUTOCROP_KEY, snap.autocrop !== false ? "1" : "0");
     syncPipelineFieldRow(document.getElementById("globalAutocrop"));
 
-    setPipelineToggle(document.getElementById("globalSsimu2Post"), snap.ssimu2Post !== false);
-    localStorage.setItem(SSIMU2_POST_KEY, snap.ssimu2Post !== false ? "1" : "0");
+    setPipelineToggle(document.getElementById("globalSsimu2Post"), !!snap.ssimu2Post);
+    localStorage.setItem(SSIMU2_POST_KEY, snap.ssimu2Post ? "1" : "0");
     syncPipelineFieldRow(document.getElementById("globalSsimu2Post"));
 
     setPipelineToggle(document.getElementById("globalExtractSubtitles"), snap.extractSubs !== false);
@@ -1090,6 +1099,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ssimu2_target: ssimu2Target,
       tmdb_lookup: toggleOn("globalTmdbLookup"),
       hdr_strict: toggleOn("globalHdrStrict"),
+      preserve_dovi_rpu: toggleOn("globalPreserveDoviRpu"),
       subtitle_search: toggleOn("globalSubtitleSearch"),
       tmdb_api_key: document.getElementById("settingsTmdbApiKey")?.value || "",
       opensubtitles_api_key: document.getElementById("settingsOsApiKey")?.value || "",
@@ -1097,6 +1107,7 @@ document.addEventListener("DOMContentLoaded", () => {
       opensubtitles_password: document.getElementById("settingsOsPass")?.value || "",
       watch_folder_enabled: toggleOn("globalWatchFolderEnabled"),
       watch_folder_path: (document.getElementById("settingsWatchFolderPath")?.value || "").trim(),
+      watch_folder_output_path: (document.getElementById("settingsWatchFolderOutputPath")?.value || "").trim(),
       watch_folder_default_preset: document.getElementById("settingsWatchFolderPreset")?.value || "",
       hour_format: getHourFormat(),
       allow_builtin_preset_edits: toggleOn("globalAllowBuiltinPresetEdits")
@@ -2788,6 +2799,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     }
 
+  // Mirrors core/pipeline.py select_and_prioritize_audio's ordering: preferred
+  // languages first (in priority order), everything else after, in original order.
+  function orderTracksByLanguage(tracks, languages) {
+    const priority = languages && languages.length ? languages : [...DEFAULT_AUDIO_LANGUAGES];
+    const buckets = {};
+    priority.forEach(key => { buckets[key] = []; });
+    const other = [];
+    tracks.forEach(t => {
+      const fam = langFamily(t.language);
+      if (buckets[fam]) buckets[fam].push(t);
+      else other.push(t);
+    });
+    return [...priority.flatMap(key => buckets[key]), ...other];
+  }
+
   function pickBestTrack(tracks) {
     if (!tracks || tracks.length === 0) return null;
     return tracks.reduce((best, t) => {
@@ -3174,13 +3200,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (pid && allPresets.some(p => p.id === pid)) editJobPreset.value = pid;
     }
 
-    const tracks = job.media_info?.audio_tracks || [];
+    const rawTracks = job.media_info?.audio_tracks || [];
     const order = job.config?.audio_tracks_order;
     // Explicit [] = video-only; missing/null = fall back to auto defaults
     const hasExplicitOrder = Array.isArray(order);
     const selected = new Set(hasExplicitOrder ? order : []);
     if (editJobAudioTracks) {
-    if (tracks.length === 0) {
+    if (rawTracks.length === 0) {
       editJobAudioTracks.innerHTML = `<div class="track-empty">No audio tracks found.</div>`;
     } else {
       const cfg = job.config || {};
@@ -3190,6 +3216,10 @@ document.addEventListener("DOMContentLoaded", () => {
           : [...DEFAULT_AUDIO_LANGUAGES],
         bestOnly: cfg.audio_best_only !== false
       };
+      // media_info.audio_tracks is raw probe (source stream) order — sort by
+      // language priority so checkbox DOM order (and the audio_tracks_order
+      // saved from it) puts the preferred language first, matching Add Job.
+      const tracks = orderTracksByLanguage(rawTracks, autoPrefs.languages);
       const autoSelected = getAutoSelectedTrackIds(tracks, autoPrefs);
       editJobAudioTracks.innerHTML = tracks.map((t) => {
         const layout = (t.layout_desc || "").trim();
