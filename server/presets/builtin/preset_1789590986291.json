@@ -1,8 +1,8 @@
 {
   "id": "preset_1789590986291",
-  "name": "4K",
+  "name": "4K (noise)",
   "description": "",
-  "crf": 36.0,
+  "crf": 34.0,
   "preset": 3,
   "resolution_target": "2160p",
   "audio_bitrate_51": "320k",
@@ -15,10 +15,12 @@
     "noise-size": 6,
     "noise-adaptive-filtering": 0,
     "enable-dlf": 2,
+    "qp-scale-compress-strength": 2.5,
     "complex-hvs": 1,
     "enable-tf": 3,
     "enable-cdef": 0,
     "enable-restoration": 0,
+    "enable-alt-cdef": 2,
     "tune": 0
   }
 }
