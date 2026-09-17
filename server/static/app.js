@@ -1065,7 +1065,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const watchPreset = document.getElementById("settingsWatchFolderPreset");
     if (watchPreset) {
       watchPreset.innerHTML = `<option value="">(No default — use built-in defaults)</option>` +
-        allPresets.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+        sortPresetsByName(allPresets).map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
       watchPreset.value = appSettings.watch_folder_default_preset || "";
     }
   }
@@ -1650,6 +1650,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function sortPresetsByName(presets) {
+    return (presets || []).slice().sort((a, b) =>
+      String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      })
+    );
+  }
+
   function syncInspPresetSelect() {
     const inspPresetSelect = document.getElementById("inspPresetSelect");
     if (!inspPresetSelect) return;
@@ -1661,7 +1670,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     inspPresetSelect.disabled = false;
-    inspPresetSelect.innerHTML = allPresets.map(p =>
+    inspPresetSelect.innerHTML = sortPresetsByName(allPresets).map(p =>
       `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`
     ).join("");
     inspPresetSelect.value = selectedPreset;
@@ -1715,8 +1724,8 @@ document.addEventListener("DOMContentLoaded", () => {
       "2160p": "2160p"
     };
 
-    const builtins = allPresets.filter(p => !!p.builtin);
-    const locals = allPresets.filter(p => !p.builtin);
+    const builtins = sortPresetsByName(allPresets.filter(p => !!p.builtin));
+    const locals = sortPresetsByName(allPresets.filter(p => !p.builtin));
     const parts = [];
     builtins.forEach(p => parts.push(renderPresetCardHtml(p, resLabel)));
     if (builtins.length && locals.length) {
@@ -2299,8 +2308,8 @@ document.addEventListener("DOMContentLoaded", () => {
       ) {
         queueState.currentJobId = null;
       }
-      if (data.status === "COMPLETED" || data.status === "FAILED" || data.status === "CANCELLED" || data.status === "SKIPPED") {
-        // Safety: archived outcomes live under Finished, not the pending list
+      if (data.status === "COMPLETED" || data.status === "FAILED" || data.status === "SKIPPED") {
+        // Archived outcomes live under Finished. Cancelled stays in the queue for Reset.
         if (idx !== -1) queueState.jobs.splice(idx, 1);
         renderQueue();
         fetchHistory();
@@ -2338,8 +2347,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderQueueControls() {
-    // Pending list only — completed jobs live in history, not the queue.
-    const pending = (queueState.jobs || []).filter((j) => j.status !== "COMPLETED");
+    // Pending work: queued + failed (auto-retry on Start). Cancelled need Reset first.
+    const pending = (queueState.jobs || []).filter(
+      (j) => j.status === "QUEUED" || j.status === "FAILED" || ACTIVE_JOB_STATUSES.includes(j.status)
+    );
     const hasJobs = pending.length > 0;
     if (btnStartQueue) btnStartQueue.disabled = !hasJobs || !!queueState.isRunning;
     if (btnPauseQueue) btnPauseQueue.disabled = !hasJobs || !queueState.isRunning;
@@ -2407,12 +2418,23 @@ document.addEventListener("DOMContentLoaded", () => {
       syncContainerUi();
     }
 
-    // Queue list — keep active jobs visible; completed live under Finished
-    const listJobs = queueState.jobs.filter(j => j.status !== "COMPLETED");
+    // Queue list — keep active jobs visible (pinned first); completed live under Finished
+    const listJobs = queueState.jobs
+      .filter(j => j.status !== "COMPLETED")
+      .slice()
+      .sort((a, b) => {
+        const aAct = ACTIVE_JOB_STATUSES.includes(a.status) ? 0 : 1;
+        const bAct = ACTIVE_JOB_STATUSES.includes(b.status) ? 0 : 1;
+        return aAct - bAct;
+      });
     if (listJobs.length === 0) {
       queueList.innerHTML = "";
     } else {
-      queueList.innerHTML = listJobs.map(job => renderQueueCard(job)).join("");
+      const movableCount = listJobs.filter((j) => {
+        const active = ACTIVE_JOB_STATUSES.includes(j.status);
+        return !active && j.status !== "CANCELLED";
+      }).length;
+      queueList.innerHTML = listJobs.map(job => renderQueueCard(job, { allowReorder: movableCount > 1 })).join("");
       applyQueueFilenameTooltips();
       
       // Attach remove handlers
@@ -2457,7 +2479,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let _queueDragOrderBefore = null;
 
   function getQueueCardDragAfterElement(container, y) {
-    const cards = [...container.querySelectorAll(".queue-card:not(.is-dragging)")];
+    // Only reorder among draggable (queued) cards — active encodes stay pinned.
+    const cards = [...container.querySelectorAll(".queue-card.is-draggable:not(.is-dragging)")];
     return cards.reduce((closest, child) => {
       const box = child.getBoundingClientRect();
       const offset = y - box.top - box.height / 2;
@@ -2549,8 +2572,19 @@ document.addEventListener("DOMContentLoaded", () => {
       e.preventDefault();
       try { e.dataTransfer.dropEffect = "move"; } catch (_) { /* noop */ }
       const after = getQueueCardDragAfterElement(queueList, e.clientY);
-      if (after == null) queueList.appendChild(dragging);
-      else queueList.insertBefore(dragging, after);
+      if (after != null) {
+        queueList.insertBefore(dragging, after);
+      } else {
+        // Drop below all other queued cards, still under any pinned active encode(s).
+        const lastQueued = [...queueList.querySelectorAll(".queue-card.is-draggable:not(.is-dragging)")].pop();
+        if (lastQueued) {
+          lastQueued.after(dragging);
+        } else {
+          const lastPinned = [...queueList.querySelectorAll(".queue-card:not(.is-draggable)")].pop();
+          if (lastPinned) lastPinned.after(dragging);
+          else queueList.appendChild(dragging);
+        }
+      }
     });
     queueList.addEventListener("drop", (e) => {
       e.preventDefault();
@@ -2647,20 +2681,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }).join("");
   }
 
-  function renderQueueCard(job) {
+  function renderQueueCard(job, opts = {}) {
     const isFailed = job.status === "FAILED";
     const isCancelled = job.status === "CANCELLED";
     const isActive = ACTIVE_JOB_STATUSES.includes(job.status);
-    const statusClass = isFailed || isCancelled
-      ? "q-status-failed"
-      : (isActive ? "q-status-active" : "q-status-queued");
     const isTest = !!job.config?.test_mode;
     const testLabel = isTest
       ? `${job.config.trim_start || "?"} → ${job.config.trim_end || "?"}`
       : "";
     const canEdit = job.status === "QUEUED";
     const canRequeue = isCancelled || isFailed;
-    const canDrag = !isActive;
+    // Active / cancelled stay put; reorder only when 2+ movable cards exist.
+    const canMove = !isActive && !isCancelled;
+    const canDrag = canMove && !!opts.allowReorder;
     const tag = job.media_tag || {};
     const outName = (job.output_path || "").split(/[\\/]/).pop() || tag.library_name || "";
     const displayName = outName || job.filename || "";
@@ -2674,14 +2707,26 @@ document.addEventListener("DOMContentLoaded", () => {
     const presetBadge = outdated
       ? `<span class="q-status-badge q-preset-badge q-outdated-badge" title="Preset settings changed since this job was queued">${escapeHtml(presetName)} - Outdated <button type="button" class="btn-sync-preset" data-id="${job.id}" title="Update job from current preset" aria-label="Update from preset">↺</button></span>`
       : `<span class="q-status-badge q-preset-badge">${escapeHtml(presetName)}</span>`;
+    const statusBadge = (isFailed || isCancelled)
+      ? `<span class="q-status-badge q-status-failed">${job.status}</span>`
+      : "";
+    const cardClass = [
+      "queue-card",
+      isCancelled ? "is-cancelled" : "",
+      canDrag ? "is-draggable" : "",
+      canMove && !canDrag ? "is-drag-solo" : "",
+    ].filter(Boolean).join(" ");
+    const dragHandle = canDrag
+      ? `<span class="queue-card-drag-handle" title="Drag to reorder" draggable="true" aria-hidden="true">⋮⋮</span>`
+      : `<span class="queue-card-drag-handle" aria-hidden="true">⋮⋮</span>`;
 
     return `
-      <div class="queue-card${isCancelled ? " is-cancelled" : ""}${canDrag ? " is-draggable" : ""}" data-id="${job.id}">
-        <span class="queue-card-drag-handle" title="Drag to reorder"${canDrag ? ' draggable="true"' : ""} aria-hidden="true">⋮⋮</span>
+      <div class="${cardClass}" data-id="${job.id}">
+        ${dragHandle}
         <div class="queue-card-left">
           <div class="q-filename" data-full-name="${escapeHtml(displayName)}" data-original-name="${escapeHtml(job.filename || "")}">${escapeHtml(displayName)}</div>
           <div class="q-meta">
-            <span class="q-status-badge ${statusClass}">${job.status}</span>
+            ${statusBadge}
             ${presetBadge}
             ${year ? `<span class="q-status-badge q-tag-badge">${escapeHtml(year)}</span>` : ""}
             ${quality ? `<span class="q-status-badge q-tag-badge">${escapeHtml(quality)}</span>` : ""}
@@ -3637,7 +3682,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (editImdb) editImdb.value = tag.imdb_id || "";
 
     if (editJobPreset) {
-      editJobPreset.innerHTML = (allPresets || []).map(p =>
+      editJobPreset.innerHTML = sortPresetsByName(allPresets || []).map(p =>
         `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`
       ).join("");
       const pid = job.config?.preset_id || selectedPreset;

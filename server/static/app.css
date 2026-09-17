@@ -790,7 +790,6 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 24px;
-  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .queue-card {
@@ -835,38 +834,25 @@ body {
   background: var(--border-subtle);
 }
 
-.queue-card.is-draggable:hover .queue-card-drag-handle {
-  color: var(--text-muted);
-}
-
-.queue-card.is-draggable:hover .queue-card-drag-handle::after {
-  background: rgba(255, 255, 255, 0.16);
-}
-
 .queue-card.is-dragging .queue-card-drag-handle,
 .queue-card-drag-handle:active {
   cursor: grabbing;
 }
 
-.queue-card:not(.is-draggable) .queue-card-drag-handle {
+.queue-card:not(.is-draggable):not(.is-drag-solo) .queue-card-drag-handle {
   visibility: hidden;
   pointer-events: none;
 }
 
-.queue-card:hover,
-.history-card:hover {
-  background: var(--bg-badge);
-  border-color: var(--border-hover);
+.queue-card.is-drag-solo .queue-card-drag-handle {
+  opacity: 0.22;
+  cursor: default;
+  pointer-events: none;
 }
 
 .queue-card.is-cancelled {
   background: rgba(244, 63, 94, 0.04);
   border-color: rgba(244, 63, 94, 0.14);
-}
-
-.queue-card.is-cancelled:hover {
-  background: rgba(244, 63, 94, 0.07);
-  border-color: rgba(244, 63, 94, 0.22);
 }
 
 .queue-header-actions > .btn.btn-sm,
@@ -946,10 +932,6 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.queue-card:hover .queue-card-right .btn-outline {
-  border-color: var(--bg-badge-hover);
 }
 
 .q-filename {
@@ -2715,10 +2697,6 @@ select.form-input {
   height: 14px;
   display: block;
   flex-shrink: 0;
-}
-
-.history-card:hover .history-card-right .btn-outline {
-  border-color: var(--bg-badge-hover);
 }
 
 .log-report-summary {
