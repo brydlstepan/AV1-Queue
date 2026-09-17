@@ -1,8 +1,8 @@
 {
-  "id": "preset_1789061080339",
-  "name": "4K (noise)",
+  "id": "preset_1789590986291",
+  "name": "4K",
   "description": "",
-  "crf": 30.0,
+  "crf": 36.0,
   "preset": 3,
   "resolution_target": "2160p",
   "audio_bitrate_51": "320k",
@@ -10,17 +10,15 @@
   "audio_languages": null,
   "audio_best_only": true,
   "svt_params": {
-    "film-grain": 10,
-    "noise": 25,
-    "noise-size": 0,
+    "noise": 30,
+    "noise-chroma-from-luma": 1,
+    "noise-size": 6,
     "noise-adaptive-filtering": 0,
     "enable-dlf": 2,
-    "hbd-mds": 1,
-    "tx-bias": 1,
     "complex-hvs": 1,
-    "enable-alt-cdef": 2,
-    "qm-min": 4,
-    "qm-max": 14,
+    "enable-tf": 3,
+    "enable-cdef": 0,
+    "enable-restoration": 0,
     "tune": 0
   }
 }

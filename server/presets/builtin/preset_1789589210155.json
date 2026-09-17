@@ -1,0 +1,15 @@
+{
+  "id": "preset_1789589210155",
+  "name": "Default",
+  "description": "",
+  "crf": 32.0,
+  "preset": 3,
+  "resolution_target": "source",
+  "audio_bitrate_51": "320k",
+  "audio_bitrate_stereo": "160k",
+  "audio_languages": null,
+  "audio_best_only": true,
+  "svt_params": {
+    "tune": 0
+  }
+}
