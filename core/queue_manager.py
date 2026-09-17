@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import time
+import traceback
 import uuid
 import shutil
 import tempfile
@@ -707,6 +708,30 @@ class QueueManager:
         self.emit_event("job_removed", {"id": job_id})
         return True
 
+    def reorder_jobs(self, ordered_ids: List[str]) -> List[Dict[str, Any]]:
+        """Reorder the queue to match ordered_ids (first QUEUED is next to encode).
+
+        Any job IDs not listed are appended in their previous relative order.
+        """
+        with self._lock:
+            by_id = {j["id"]: j for j in self.jobs}
+            seen: Set[str] = set()
+            new_jobs: List[Dict[str, Any]] = []
+            for jid in ordered_ids:
+                job = by_id.get(jid)
+                if not job or jid in seen:
+                    continue
+                new_jobs.append(job)
+                seen.add(jid)
+            for j in self.jobs:
+                if j["id"] not in seen:
+                    new_jobs.append(j)
+            self.jobs = new_jobs
+            result = list(self.jobs)
+        self.save_queue()
+        self.emit_event("queue_reordered", {"job_ids": [j["id"] for j in result]})
+        return result
+
     def start_queue(self, test_mode_config: Optional[Dict[str, Any]] = None):
         # Atomic check-and-set so concurrent Start cannot spawn two workers.
         with self._lock:
@@ -860,6 +885,21 @@ class QueueManager:
             "be determined — quarantined for manual review. Original file kept untouched."
         )
 
+    def _archive_job_to_history(self, job: Dict[str, Any], job_id: str) -> None:
+        """Persist job JSON under history/ and drop it from the active queue."""
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        history_file = HISTORY_DIR / f"{job_id}.json"
+        try:
+            with open(history_file, "w", encoding="utf-8") as hf:
+                json.dump(job, hf, indent=2)
+        except Exception as he:
+            print(f"[!] Error saving history file: {he}")
+        with self._lock:
+            self.jobs = [j for j in self.jobs if j["id"] != job_id]
+        self.save_queue()
+        self.emit_event("history_updated", job)
+        self.emit_event("job_removed", {"id": job_id})
+
     def _finalize_skipped(self, job, job_id, start_time, reason):
         """Record a skipped source in history without producing any output."""
         job["status"] = JobStatus.SKIPPED
@@ -875,18 +915,37 @@ class QueueManager:
             "reason": reason,
             "duration_seconds": job["elapsed_seconds"],
         }
-        history_file = HISTORY_DIR / f"{job_id}.json"
-        try:
-            with open(history_file, "w", encoding="utf-8") as hf:
-                json.dump(job, hf, indent=2)
-        except Exception as he:
-            print(f"[!] Error saving history file: {he}")
-        with self._lock:
-            self.jobs = [j for j in self.jobs if j["id"] != job_id]
-        self.save_queue()
-        self.emit_event("history_updated", job)
-        self.emit_event("job_removed", {"id": job_id})
+        self._archive_job_to_history(job, job_id)
         print(f"[queue] Job {job_id} skipped: {reason}")
+
+    def _finalize_failed(self, job, job_id, start_time, error: str, cancelled: bool = False) -> None:
+        """Archive a failed/cancelled encode to history with logs for debugging."""
+        status = JobStatus.CANCELLED if cancelled else JobStatus.FAILED
+        job["status"] = status
+        job["stage"] = f"{'Cancelled' if cancelled else 'Error'}: {error}"
+        job["error"] = error
+        job["elapsed_seconds"] = int(time.time() - start_time)
+        job["completed_at"] = time.time()
+        logs = job.setdefault("logs", [])
+        marker = "CANCELLED" if cancelled else "FAILED"
+        logs.append(f"{marker}: {error}")
+        try:
+            tb = traceback.format_exc().strip()
+            if tb and not tb.startswith("NoneType: None"):
+                for line in tb.splitlines()[-40:]:
+                    logs.append(line)
+        except Exception:
+            pass
+        while len(logs) > 200:
+            logs.pop(0)
+        job["stats"] = {
+            "failed": not cancelled,
+            "cancelled": cancelled,
+            "duration_seconds": job["elapsed_seconds"],
+            "error": error,
+        }
+        self._archive_job_to_history(job, job_id)
+        print(f"[!] Job {job_id} {status.lower()}: {error}")
 
     def _execute_single_job(self, job: Dict[str, Any]):
         job_id = job["id"]
@@ -1386,6 +1445,43 @@ class QueueManager:
                     self.pipeline.kill_all_processes()
                     raise RuntimeError("Job cancelled.")
 
+            # A DoVi RPU carries frame-geometry-dependent metadata (active area /
+            # L5-L8 trims) extracted from the *uncropped* source above — autocrop
+            # runs after that and can shrink the actual encoded frame, so an
+            # RPU injected alongside a real crop would describe geometry that no
+            # longer matches the picture. Correct it via dovi_tool's documented
+            # editor fix for exactly this ({"active_area": {"crop": true}} —
+            # "should be set to true when final video has no letterbox bars")
+            # rather than dropping RPU passthrough outright. Still best-effort:
+            # if the edit itself fails, fall back to HDR10-only same as any
+            # other RPU failure. See README.md "HDR & Dolby Vision".
+            if dovi_rpu_path and any(int(crop.get(k, 0) or 0) for k in ("left", "top", "right", "bottom")):
+                cropped_rpu_tmp = encode_temp_dir / "dovi_rpu_cropped.bin"
+                corrected = self.pipeline.hdr_processor.apply_dovi_crop_edit(
+                    Path(dovi_rpu_path),
+                    cropped_rpu_tmp,
+                    progress_cb=lambda m: append_log(m, update_stage=False),
+                )
+                if corrected:
+                    staged_cropped = stage_svt_meta_file(corrected, job_id, "dovi_rpu_cropped.bin")
+                    dovi_rpu_path = str(staged_cropped)
+                    staged_meta_paths.append(dovi_rpu_path)
+                    append_log(
+                        "Autocrop is active — corrected DoVi RPU active area to match "
+                        "the cropped frame (dovi_tool editor).",
+                        update_stage=False,
+                    )
+                else:
+                    append_log(
+                        "Autocrop is active and DoVi RPU active-area correction failed — "
+                        "dropping RPU passthrough for this job (RPU geometry would no "
+                        "longer match the cropped frame); encoding with HDR10 only.",
+                        update_stage=False,
+                    )
+                    dovi_rpu_path = None
+                    if "--dolby-vision-rpu" in meta_inject:
+                        meta_inject.remove("--dolby-vision-rpu")
+
             self._wait_if_paused()
             if self._cancel_event.is_set():
                 raise RuntimeError("Job cancelled.")
@@ -1605,21 +1701,7 @@ class QueueManager:
                 job["stats"]["crop"] = crop
 
             # Save to separate history file
-            history_file = HISTORY_DIR / f"{job_id}.json"
-            try:
-                with open(history_file, "w", encoding="utf-8") as hf:
-                    json.dump(job, hf, indent=2)
-            except Exception as he:
-                print(f"[!] Error saving history file: {he}")
-
-            # Temp cleaned in finally — avoid double rmtree here
-
-            # Remove from active queue list once safely recorded in history
-            with self._lock:
-                self.jobs = [j for j in self.jobs if j["id"] != job_id]
-            self.save_queue()
-            self.emit_event("history_updated", job)
-            self.emit_event("job_removed", {"id": job_id})
+            self._archive_job_to_history(job, job_id)
 
             # Subtitle extract / OpenSubtitles fill — background so the next
             # encode can start immediately. Skip in Test Mode (segment encodes
@@ -1730,10 +1812,13 @@ class QueueManager:
                     ).start()
 
         except Exception as e:
-            job["status"] = JobStatus.FAILED if not self._cancel_event.is_set() else JobStatus.CANCELLED
-            job["stage"] = f"Error: {str(e)}"
-            job["error"] = str(e)
-            print(f"[!] Job {job_id} failed: {e}")
+            self._finalize_failed(
+                job,
+                job_id,
+                start_time,
+                str(e),
+                cancelled=self._cancel_event.is_set(),
+            )
 
         finally:
             stop_elapsed.set()

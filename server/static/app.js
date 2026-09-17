@@ -23,6 +23,60 @@ document.addEventListener("DOMContentLoaded", () => {
   function stripExtToken(tpl) {
     return String(tpl || "").replace(/\.?\[ext\]/gi, "").replace(/\s+$/g, "").replace(/\.$/, "");
   }
+
+  /** Mirror core/media_tagging._sanitize_filename_part */
+  function sanitizeFilenamePart(val) {
+    return String(val || "")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[.\s]+|[.\s]+$/g, "");
+  }
+
+  /** Mirror core/media_tagging.apply_name_template */
+  function applyNameTemplate(template, values) {
+    let out = template || DEFAULT_NAME_TEMPLATE_MOVIE;
+    out = out.replace(/\.?\[ext\]/gi, "");
+    const keys = Object.keys(values || {}).filter((k) => k !== "ext")
+      .sort((a, b) => b.length - a.length);
+    if (keys.length) {
+      const tokenRe = new RegExp(
+        "\\[(" + keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")\\]",
+        "g"
+      );
+      out = out.replace(tokenRe, (_, key) => values[key] || "");
+    }
+    out = out.replace(/\(\s*\)/g, "").replace(/\[\s*\]/g, "");
+    out = out.replace(/(?:\s*-\s*){2,}/g, " - ").replace(/\s{2,}/g, " ");
+    out = out.replace(/^[\s.\-]+|[\s.\-]+$/g, "");
+    const ext = String((values && values.ext) || "mp4").replace(/^\./, "");
+    for (const known of ["mp4", "webm", "mkv", "m4v", "mov"]) {
+      if (out.toLowerCase().endsWith("." + known)) {
+        out = out.slice(0, -(known.length + 1)).replace(/[\s.]+$/, "");
+        break;
+      }
+    }
+    return out ? `${out}.${ext}` : `Unknown.${ext}`;
+  }
+
+  /** Mirror core/media_tagging.resolution_from_target (simplified). */
+  function resolutionFromTarget(target, video, hints) {
+    const t = String(target || "source").trim().toLowerCase();
+    if (t === "2160p" || t === "4k" || t === "uhd") return "2160p";
+    if (t === "1440p") return "1440p";
+    if (t === "1080p") return "1080p";
+    if (t === "720p") return "720p";
+    const w = Number((video || {}).width) || 0;
+    const h = Number((video || {}).height) || 0;
+    const longEdge = Math.max(w, h);
+    const shortEdge = w && h ? Math.min(w, h) : 0;
+    if (longEdge >= 3800 || shortEdge >= 2100 || h >= 2160) return "2160p";
+    if (longEdge >= 1900 || h >= 1080) return "1080p";
+    if (longEdge >= 1200 || h >= 720) return "720p";
+    if (longEdge > 0) return h ? `${h}p` : `${w}w`;
+    return String((hints || {}).resolution || "");
+  }
+
   const AUDIO_LANGS_KEY = "av1queue_audio_languages";
   const AUDIO_BEST_ONLY_KEY = "av1queue_audio_best_only";
   const AUDIO_FORMAT_KEY = "av1queue_audio_format";
@@ -441,6 +495,19 @@ document.addEventListener("DOMContentLoaded", () => {
     return l;
   }
 
+  const LANG_TONE_KNOWN = new Set([
+    "eng", "ces", "deu", "fra", "spa", "jpn", "kor", "zho", "ita", "pol", "rus", "und"
+  ]);
+
+  /** CSS tone class for language codes (ENG / CES / …). */
+  function langToneClass(lang) {
+    const fam = langFamily(lang) || "und";
+    if (LANG_TONE_KNOWN.has(fam)) return `lang-${fam}`;
+    let h = 0;
+    for (let i = 0; i < fam.length; i++) h = (h * 31 + fam.charCodeAt(i)) >>> 0;
+    return `lang-tone-${h % 8}`;
+  }
+
   function loadLangList(key, fallback) {
     try {
       const raw = localStorage.getItem(key);
@@ -550,6 +617,34 @@ document.addEventListener("DOMContentLoaded", () => {
     return fmt === "eac3" ? "E-AC-3" : "Opus";
   }
 
+  /** Output layout class from channel count (mirrors pipeline.layout_desc). */
+  function audioLayoutDesc(track) {
+    const tagged = String(track?.layout_desc || "").trim();
+    if (tagged) return tagged;
+    const ch = Number(track?.channels || 0);
+    if (ch >= 5) return "5.1 Surround";
+    if (ch === 2) return "Stereo";
+    if (ch > 0) return "Mono";
+    return "";
+  }
+
+  function audioSourceLayoutLabel(track) {
+    const layout = String(track?.channel_layout || "").trim();
+    if (layout) return layout;
+    const ch = Number(track?.channels || 0);
+    return ch ? `${ch}ch` : "";
+  }
+
+  /** Badge: source channels → encode layout (optional format / bitrate suffix). */
+  function audioTrackEncodeBadge(track, opts = {}) {
+    const src = audioSourceLayoutLabel(track);
+    const dest = audioLayoutDesc(track);
+    let badge = src && dest ? `${src} → ${dest}` : (dest || src || "");
+    const extras = [opts.formatLabel, opts.bitrate].filter(Boolean).join(" ");
+    if (extras) badge = badge ? `${badge} · ${extras}` : extras;
+    return badge;
+  }
+
   /** Encoded layout labels for selected tracks: "5.1", "stereo", "mono" (unique, surround-first). */
   function encodedAudioChannelLabels(item) {
     const tracks = item?.media_info?.audio_tracks || [];
@@ -626,7 +721,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Mirrors core/media_tagging.hdr_label — the tag that goes in the filename.
-  // "" for SDR (no tag is written). DoVi is never emitted; tag the output layer.
+  // "" for SDR (no tag is written). Filename always tags the HDR10 base layer,
+  // even when preserve_dovi_rpu also carries the RPU — see README.md "HDR & Dolby Vision".
   function hdrFilenameTag(hdr) {
     if (!hdr) return "";
     if (hdr.is_dovi) return hdr.is_hdr10plus ? "HDR10plus" : "HDR10";
@@ -643,17 +739,20 @@ document.addEventListener("DOMContentLoaded", () => {
       const profNum = hdr.dovi_profile != null ? Number(hdr.dovi_profile) : null;
       const compat = hdr.dovi_compat_id != null ? Number(hdr.dovi_compat_id) : null;
       const prof = Number.isFinite(profNum) ? `Profile ${profNum}` : "Profile 8";
-      // Policy: DV is never emitted. P5 (base-layer compat 0) is skipped; every
-      // other profile encodes as HDR10 with the RPU discarded (HDR10+ kept if present).
+      // Policy: P5 (base-layer compat 0) is skipped; every other profile
+      // encodes as HDR10 (HDR10+ kept if present). RPU passthrough alongside
+      // that HDR10 base layer is opt-in via settings.preserve_dovi_rpu and
+      // best-effort — see README.md "HDR & Dolby Vision".
       if (compat === 0 || profNum === 5) {
         return `Dolby Vision (${prof}) — will be skipped (base layer not standalone)`;
       }
       if (profNum === 4 || (!Number.isFinite(compat) && !(profNum === 7 || profNum === 8))) {
         return `Dolby Vision (${prof}) — quarantined (profile/compat unclear)`;
       }
+      const rpuSuffix = appSettings.preserve_dovi_rpu ? " + DoVi RPU" : "";
       return hdr.is_hdr10plus
-        ? `Dolby Vision (${prof}) + HDR10+ → HDR10+ AV1`
-        : `Dolby Vision (${prof}) → HDR10 AV1`;
+        ? `Dolby Vision (${prof}) + HDR10+ → HDR10+ AV1${rpuSuffix}`
+        : `Dolby Vision (${prof}) → HDR10 AV1${rpuSuffix}`;
     }
     if (hdr.dovi_unverified || hdr.dovi_filename_hint) {
       return "DoVi (filename) — quarantined until probe confirms profile";
@@ -846,7 +945,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ssimu2_target: 80,
     tmdb_lookup: true,
     hdr_strict: true,
-    preserve_dovi_rpu: false,
+    preserve_dovi_rpu: true,
     tmdb_api_key: "",
     subtitle_search: false,
     opensubtitles_api_key: "",
@@ -903,7 +1002,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const preserveDoviRpu = document.getElementById("globalPreserveDoviRpu");
     if (preserveDoviRpu) {
-      setPipelineToggle(preserveDoviRpu, !!appSettings.preserve_dovi_rpu);
+      setPipelineToggle(preserveDoviRpu, appSettings.preserve_dovi_rpu !== false);
       syncPipelineFieldRow(preserveDoviRpu);
     }
     const hourFormat = document.getElementById("globalHourFormat");
@@ -1145,6 +1244,7 @@ document.addEventListener("DOMContentLoaded", () => {
     pipelineSettingsSnapshot = takePipelineSettingsSnapshot();
     if (typeof renderHistory === "function") renderHistory();
     if (typeof renderPresets === "function") renderPresets();
+    if (typeof renderQueue === "function") renderQueue();
     closePipelineSettings();
   }
 
@@ -1444,6 +1544,7 @@ document.addEventListener("DOMContentLoaded", () => {
       onChange: () => {
         saveLangList(AUDIO_LANGS_KEY, pipelineAudioLanguages);
         renderPipelineAudioLangEditor();
+        if (typeof renderQueue === "function") renderQueue();
       }
     });
   }
@@ -1491,6 +1592,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pipelineAudioLanguages.push(code);
       saveLangList(AUDIO_LANGS_KEY, pipelineAudioLanguages);
       renderPipelineAudioLangEditor();
+      if (typeof renderQueue === "function") renderQueue();
     });
   }
 
@@ -2197,8 +2299,8 @@ document.addEventListener("DOMContentLoaded", () => {
       ) {
         queueState.currentJobId = null;
       }
-      if (data.status === "COMPLETED") {
-        // Safety: never keep completed jobs in the pending list
+      if (data.status === "COMPLETED" || data.status === "FAILED" || data.status === "CANCELLED" || data.status === "SKIPPED") {
+        // Safety: archived outcomes live under Finished, not the pending list
         if (idx !== -1) queueState.jobs.splice(idx, 1);
         renderQueue();
         fetchHistory();
@@ -2222,6 +2324,11 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (event === "queue_resumed") {
       queueState.isPaused = false;
       renderQueueControls();
+    } else if (event === "queue_reordered") {
+      if (Array.isArray(data?.job_ids) && data.job_ids.length) {
+        applyLocalQueueOrder(data.job_ids);
+        renderQueue();
+      }
     } else if (event === "queue_stopped" || event === "queue_completed") {
       queueState.isRunning = false;
       queueState.currentJobId = null;
@@ -2327,6 +2434,13 @@ document.addEventListener("DOMContentLoaded", () => {
           requeueJob(jid);
         });
       });
+      document.querySelectorAll("#queueList .btn-view-log-queue").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          const jid = e.currentTarget.getAttribute("data-id");
+          const job = queueState.jobs.find(j => j.id === jid);
+          if (job) openLogReportModal(job);
+        });
+      });
       document.querySelectorAll("#queueList .btn-sync-preset").forEach(btn => {
         btn.addEventListener("click", (e) => {
           e.preventDefault();
@@ -2335,7 +2449,112 @@ document.addEventListener("DOMContentLoaded", () => {
           syncJobPresetFromCurrent(jid);
         });
       });
+      wireQueueDragReorder();
     }
+  }
+
+  let _queueDragPersistTimer = null;
+  let _queueDragOrderBefore = null;
+
+  function getQueueCardDragAfterElement(container, y) {
+    const cards = [...container.querySelectorAll(".queue-card:not(.is-dragging)")];
+    return cards.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        return { offset, element: child };
+      }
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+  }
+
+  function readQueueDomOrder() {
+    return [...queueList.querySelectorAll(".queue-card[data-id]")]
+      .map(el => el.getAttribute("data-id"))
+      .filter(Boolean);
+  }
+
+  function applyLocalQueueOrder(orderedIds) {
+    const byId = new Map((queueState.jobs || []).map(j => [j.id, j]));
+    const next = [];
+    const seen = new Set();
+    orderedIds.forEach(id => {
+      const job = byId.get(id);
+      if (job && !seen.has(id)) {
+        next.push(job);
+        seen.add(id);
+      }
+    });
+    (queueState.jobs || []).forEach(j => {
+      if (!seen.has(j.id)) next.push(j);
+    });
+    queueState.jobs = next;
+  }
+
+  async function persistQueueOrder(orderedIds) {
+    try {
+      const res = await fetch("/api/queue/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_ids: orderedIds })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || res.statusText || "Reorder failed");
+      }
+      const data = await res.json();
+      if (Array.isArray(data.jobs)) queueState.jobs = data.jobs;
+    } catch (e) {
+      console.warn("Queue reorder failed", e);
+      // Snap back to last known server order on next WS/initial refresh
+      if (_queueDragOrderBefore) applyLocalQueueOrder(_queueDragOrderBefore);
+      renderQueue();
+    }
+  }
+
+  function wireQueueDragReorder() {
+    if (!queueList) return;
+    queueList.querySelectorAll(".queue-card.is-draggable").forEach(card => {
+      const handle = card.querySelector(".queue-card-drag-handle");
+      if (!handle) return;
+      handle.addEventListener("dragstart", (e) => {
+        _queueDragOrderBefore = readQueueDomOrder();
+        card.classList.add("is-dragging");
+        try {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", card.getAttribute("data-id") || "");
+          // Drag the whole card visually, not just the handle glyph
+          const rect = card.getBoundingClientRect();
+          e.dataTransfer.setDragImage(card, Math.min(24, rect.width / 4), Math.min(20, rect.height / 2));
+        } catch (_) { /* IE / restricted */ }
+      });
+      handle.addEventListener("dragend", async () => {
+        card.classList.remove("is-dragging");
+        const ordered = readQueueDomOrder();
+        applyLocalQueueOrder(ordered);
+        const before = (_queueDragOrderBefore || []).join(",");
+        _queueDragOrderBefore = null;
+        if (ordered.join(",") === before) return;
+        if (_queueDragPersistTimer) clearTimeout(_queueDragPersistTimer);
+        _queueDragPersistTimer = setTimeout(() => persistQueueOrder(ordered), 40);
+      });
+    });
+  }
+
+  if (queueList && !queueList.dataset.dragBound) {
+    queueList.dataset.dragBound = "1";
+    queueList.addEventListener("dragover", (e) => {
+      const dragging = queueList.querySelector(".queue-card.is-dragging");
+      if (!dragging) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = "move"; } catch (_) { /* noop */ }
+      const after = getQueueCardDragAfterElement(queueList, e.clientY);
+      if (after == null) queueList.appendChild(dragging);
+      else queueList.insertBefore(dragging, after);
+    });
+    queueList.addEventListener("drop", (e) => {
+      e.preventDefault();
+    });
   }
 
   async function syncJobPresetFromCurrent(jobId) {
@@ -2388,13 +2607,44 @@ document.addEventListener("DOMContentLoaded", () => {
     return fam ? fam.toLowerCase() : "";
   }
 
-  function matchedPreferredAudioLangs(job) {
-    const preferred = Array.isArray(job?.config?.audio_languages) && job.config.audio_languages.length
-      ? job.config.audio_languages.map(langFamily).filter(Boolean)
-      : getPipelineAudioLanguages();
+  /** Language families that will actually be encoded for this job. */
+  function selectedEncodeLangFamilies(job) {
     const tracks = job?.media_info?.audio_tracks || [];
-    const present = new Set(tracks.map(t => langFamily(t.language)).filter(Boolean));
-    return preferred.filter(code => present.has(code));
+    if (!tracks.length) return new Set();
+
+    const order = job?.config?.audio_tracks_order;
+    let selectedTracks;
+    if (Array.isArray(order)) {
+      if (order.length === 0) return new Set();
+      const byIdx = new Map(tracks.map((t) => [t.stream_index, t]));
+      selectedTracks = order.map((i) => byIdx.get(i)).filter(Boolean);
+    } else {
+      const cfg = job?.config || {};
+      const prefs = {
+        languages: Array.isArray(cfg.audio_languages) && cfg.audio_languages.length
+          ? cfg.audio_languages.map(langFamily)
+          : getPipelineAudioLanguages(),
+        bestOnly: cfg.audio_best_only !== false
+      };
+      const auto = getAutoSelectedTrackIds(tracks, prefs);
+      selectedTracks = tracks.filter((t) => auto.has(t.stream_index));
+    }
+    return new Set(selectedTracks.map((t) => langFamily(t.language)).filter(Boolean));
+  }
+
+  /** Pipeline language badges in settings order; on = included in encode. */
+  function pipelineAudioLangBadges(job) {
+    const pipelineLangs = getPipelineAudioLanguages();
+    const selected = selectedEncodeLangFamilies(job);
+    return pipelineLangs.map((code) => {
+      const on = selected.has(code);
+      const state = on ? "is-on" : "is-off";
+      const label = audioLangLabel(code);
+      const title = on
+        ? `${label} — included in encode`
+        : `${label} — not included in encode`;
+      return `<span class="q-status-badge q-lang-badge ${state}" title="${escapeHtml(title)}">${escapeHtml(shortLangBadge(code))}</span>`;
+    }).join("");
   }
 
   function renderQueueCard(job) {
@@ -2410,6 +2660,7 @@ document.addEventListener("DOMContentLoaded", () => {
       : "";
     const canEdit = job.status === "QUEUED";
     const canRequeue = isCancelled || isFailed;
+    const canDrag = !isActive;
     const tag = job.media_tag || {};
     const outName = (job.output_path || "").split(/[\\/]/).pop() || tag.library_name || "";
     const displayName = outName || job.filename || "";
@@ -2417,35 +2668,35 @@ document.addEventListener("DOMContentLoaded", () => {
     const quality = tag.quality || "";
     const year = tag.year ? String(tag.year) : "";
     const tagSource = tag.source || "";
-    const audioLangs = matchedPreferredAudioLangs(job);
-    const audioLangBadges = audioLangs.map(code =>
-      `<span class="q-status-badge q-lang-badge" title="${escapeHtml(audioLangLabel(code))} audio">${escapeHtml(shortLangBadge(code))}</span>`
-    ).join("");
+    const audioLangBadges = pipelineAudioLangBadges(job);
+    const presetName = job.config?.preset_name || "—";
     const outdated = canEdit && isJobPresetOutdated(job);
-    const outdatedBadge = outdated
-      ? `<span class="q-status-badge q-outdated-badge" title="Preset settings changed since this job was queued">outdated <button type="button" class="btn-sync-preset" data-id="${job.id}" title="Update job from current preset" aria-label="Update from preset">↺</button></span>`
-      : "";
+    const presetBadge = outdated
+      ? `<span class="q-status-badge q-preset-badge q-outdated-badge" title="Preset settings changed since this job was queued">${escapeHtml(presetName)} - Outdated <button type="button" class="btn-sync-preset" data-id="${job.id}" title="Update job from current preset" aria-label="Update from preset">↺</button></span>`
+      : `<span class="q-status-badge q-preset-badge">${escapeHtml(presetName)}</span>`;
 
     return `
-      <div class="queue-card${isCancelled ? " is-cancelled" : ""}">
+      <div class="queue-card${isCancelled ? " is-cancelled" : ""}${canDrag ? " is-draggable" : ""}" data-id="${job.id}">
+        <span class="queue-card-drag-handle" title="Drag to reorder"${canDrag ? ' draggable="true"' : ""} aria-hidden="true">⋮⋮</span>
         <div class="queue-card-left">
           <div class="q-filename" data-full-name="${escapeHtml(displayName)}" data-original-name="${escapeHtml(job.filename || "")}">${escapeHtml(displayName)}</div>
           <div class="q-meta">
             <span class="q-status-badge ${statusClass}">${job.status}</span>
-            <span class="q-status-badge q-preset-badge">${escapeHtml(job.config?.preset_name || "—")}</span>
-            ${outdatedBadge}
+            ${presetBadge}
             ${year ? `<span class="q-status-badge q-tag-badge">${escapeHtml(year)}</span>` : ""}
             ${quality ? `<span class="q-status-badge q-tag-badge">${escapeHtml(quality)}</span>` : ""}
             ${imdb
               ? `<span class="q-status-badge q-imdb-badge" title="IMDb">${escapeHtml(imdb)}</span>`
               : `<span class="q-status-badge q-tag-warn" title="${escapeHtml(tag.lookup_note || "No IMDb ID")}">no IMDb</span>`}
             ${(!imdb && tagSource === "tmdb") ? `<span class="q-status-badge q-tag-badge">TMDB</span>` : ""}
-            ${tag.verified ? `<span class="q-status-badge q-tag-badge">edited</span>` : ""}
             ${audioLangBadges}
             ${isTest ? `<span class="q-status-badge badge-test">TEST ${escapeHtml(testLabel)}</span>` : ""}
           </div>
         </div>
         <div class="queue-card-right">
+          ${canRequeue ? `<button class="btn btn-outline btn-sm btn-view-log-queue" data-id="${job.id}" title="Failure report" aria-label="Failure report">
+            <svg class="btn-glyph" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M3.5 1.5h6.2L13 4.8V14a.5.5 0 0 1-.5.5h-9A.5.5 0 0 1 3 14V2a.5.5 0 0 1 .5-.5zm6 .9V5h2.6L9.5 2.4zM5 7h6v1H5V7zm0 2.5h6v1H5v-1zm0 2.5h4v1H5v-1z"/></svg>
+          </button>` : ""}
           ${canRequeue ? `<button class="btn btn-outline btn-sm btn-requeue-job" data-id="${job.id}" title="Reset to queue">↺ Reset</button>` : ""}
           ${canEdit ? `<button class="btn btn-outline btn-sm btn-edit-job" data-id="${job.id}" title="Edit">✎</button>` : ""}
           ${isActive ? "" : `<button class="btn btn-outline btn-sm btn-remove-job" data-id="${job.id}">✕</button>`}
@@ -2927,25 +3178,29 @@ document.addEventListener("DOMContentLoaded", () => {
         inspAudioTracks.innerHTML = `<div class="track-empty">No audio tracks found in this file.</div>`;
       } else {
         inspAudioTracks.innerHTML = tracks.map((t) => {
-          const layout = (t.layout_desc || "").trim();
+          const layout = audioLayoutDesc(t);
           const rawTitle = (t.title || "").trim();
           // Prefer a real track label; never fall back to filename-looking junk
           let trackTitle = rawTitle;
           if (!trackTitle) {
             trackTitle = layout || `${(t.language || "und").toUpperCase()} Audio`;
           }
+          const badge = audioTrackEncodeBadge(t, {
+            formatLabel: audioFormatLabel(getAudioFormat()),
+            bitrate: t.target_bitrate || ""
+          });
           return `
-          <div class="track-row" data-sidx="${t.stream_index}">
+          <label class="track-row" data-sidx="${t.stream_index}">
             <input type="checkbox" class="track-checkbox" data-sidx="${t.stream_index}">
             <div class="track-info">
               <div class="track-primary">
-                <span class="track-lang">${(t.language || "und").toUpperCase()}</span>
+                <span class="track-lang ${langToneClass(t.language)}">${(t.language || "und").toUpperCase()}</span>
                 <span class="track-title" title="${escapeHtml(trackTitle)}">${escapeHtml(trackTitle)}</span>
               </div>
-              <span class="track-desc">${escapeHtml(t.channel_layout || "")} (${t.channels}ch) • ${escapeHtml(t.codec || "")}</span>
+              <span class="track-desc">${escapeHtml(t.codec || "")}</span>
             </div>
-            <span class="track-badge">${escapeHtml(layout || "")} ➔ ${audioFormatLabel(getAudioFormat())} ${escapeHtml(t.target_bitrate || "")}</span>
-          </div>`;
+            <span class="track-badge">${escapeHtml(badge)}</span>
+          </label>`;
         }).join("");
         applyAutoAudioSelection(tracks);
       }
@@ -3019,6 +3274,35 @@ document.addEventListener("DOMContentLoaded", () => {
   const TEST_MODE_KEY = "av1queue_test_mode";
 
   const editJobModal = document.getElementById("editJobModal");
+  const editJobTabDetails = document.getElementById("editJobTabDetails");
+  const editJobTabAudio = document.getElementById("editJobTabAudio");
+  const editJobTabParams = document.getElementById("editJobTabParams");
+  const editJobDetailsSection = document.getElementById("editJobDetailsSection");
+  const editJobAudioSection = document.getElementById("editJobAudioSection");
+  const editJobParamsSection = document.getElementById("editJobParamsSection");
+
+  function showEditJobSection(which) {
+    const sections = {
+      details: editJobDetailsSection,
+      audio: editJobAudioSection,
+      params: editJobParamsSection
+    };
+    const tabs = {
+      details: editJobTabDetails,
+      audio: editJobTabAudio,
+      params: editJobTabParams
+    };
+    Object.entries(sections).forEach(([key, el]) => {
+      if (el) el.classList.toggle("hidden", key !== which);
+    });
+    Object.entries(tabs).forEach(([key, el]) => {
+      if (el) el.classList.toggle("active", key === which);
+    });
+  }
+
+  if (editJobTabDetails) editJobTabDetails.addEventListener("click", () => showEditJobSection("details"));
+  if (editJobTabAudio) editJobTabAudio.addEventListener("click", () => showEditJobSection("audio"));
+  if (editJobTabParams) editJobTabParams.addEventListener("click", () => showEditJobSection("params"));
   const editJobId = document.getElementById("editJobId");
   const editJobFileName = document.getElementById("editJobFileName");
   const editJobPreset = document.getElementById("editJobPreset");
@@ -3026,6 +3310,88 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnSaveEditJob = document.getElementById("btnSaveEditJob");
   const btnCancelEditJob = document.getElementById("btnCancelEditJob");
   const btnCloseEditJob = document.getElementById("btnCloseEditJob");
+
+  let editJobPreviewJob = null;
+
+  /** Live library basename from edit-job fields (mirrors refresh_media_tag_quality). */
+  function buildEditJobLibraryName(job) {
+    const tag = (job && job.media_tag) || {};
+    const titleEl = document.getElementById("editJobTitle");
+    const yearEl = document.getElementById("editJobYear");
+    const imdbEl = document.getElementById("editJobImdb");
+    const title = (titleEl?.value || "").trim() || tag.title || "Unknown";
+    const yearRaw = (yearEl?.value || "").trim();
+    const yearNum = yearRaw ? Number(yearRaw) : null;
+    const year = Number.isFinite(yearNum) ? yearNum : null;
+    let imdb = ((imdbEl?.value || "").trim() || tag.imdb_id || "").toLowerCase();
+    if (imdb && !imdb.startsWith("tt") && /^\d+$/.test(imdb)) imdb = `tt${imdb}`;
+
+    const presetId = editJobPreset ? editJobPreset.value : (job.config?.preset_id || "");
+    const preset = (allPresets || []).find((p) => p.id === presetId) || {};
+    const container = preset.container || job.config?.container || "mp4";
+    const ext = String(container).toLowerCase() === "webm" ? "webm" : "mp4";
+    const resolutionTarget = preset.resolution_target
+      || job.config?.resolution_target
+      || tag.resolution_target
+      || "source";
+    const video = job.media_info?.video || {};
+    const hints = tag.hints || {};
+    const hdr = job.media_info?.hdr;
+    const res = resolutionFromTarget(resolutionTarget, video, hints);
+    let hdrTag = hdrFilenameTag(hdr);
+    if (!hdrTag && hints.hdr) {
+      hdrTag = hints.hdr === "DoVi" ? "HDR10" : String(hints.hdr);
+    }
+    const quality = [res, hdrTag].filter(Boolean).join(" ") || tag.quality || "AV1";
+    const q = String(quality).trim();
+    const qParts = q.split(/\s+/);
+    const name = sanitizeFilenamePart(title) || "Unknown";
+    const season = tag.season != null ? pad2(tag.season) : "";
+    const episode = tag.episode != null ? pad2(tag.episode) : "";
+    const values = {
+      name,
+      title: name,
+      year: year != null ? String(year) : "",
+      imdbid: imdb,
+      imdb,
+      quality: sanitizeFilenamePart(q),
+      resolution: qParts[0] || "",
+      hdr: qParts.slice(1).join(" ") || "",
+      width: video.width ? String(video.width) : "",
+      height: video.height ? String(video.height) : "",
+      original: sanitizeFilenamePart(tag.original || title) || name,
+      show: sanitizeFilenamePart(tag.show || title) || name,
+      epname: sanitizeFilenamePart(tag.epname || ""),
+      season,
+      episode,
+      sxxexx: season && episode ? `S${season}E${episode}` : "",
+      ext
+    };
+    const kind = tag.media_kind || "movie";
+    const rawTpl = kind === "episode"
+      ? (appSettings.name_template_episode || DEFAULT_NAME_TEMPLATE_EPISODE)
+      : (appSettings.name_template_movie || DEFAULT_NAME_TEMPLATE_MOVIE);
+    let libraryName = applyNameTemplate(stripExtToken(rawTpl) || rawTpl, values);
+
+    const testFields = getTestModeJobFields();
+    const testOn = !!(testFields.test_mode || job.config?.test_mode);
+    if (testOn) {
+      const startTag = String(testFields.trim_start || job.config?.trim_start || "start").replace(/:/g, "");
+      const endTag = String(testFields.trim_end || job.config?.trim_end || "end").replace(/:/g, "");
+      const stem = libraryName.replace(/\.[^.]+$/, "");
+      libraryName = `${stem}.test_${startTag}-${endTag}.${ext}`;
+    }
+    return libraryName;
+  }
+
+  function refreshEditJobNamePreview() {
+    if (!editJobPreviewJob) return;
+    const name = buildEditJobLibraryName(editJobPreviewJob);
+    if (editJobFileName) {
+      editJobFileName.textContent = name;
+      editJobFileName.title = editJobPreviewJob.input_path || editJobPreviewJob.filename || "";
+    }
+  }
 
   const logReportModal = document.getElementById("logReportModal");
   const btnCloseLogModal = document.getElementById("btnCloseLogModal");
@@ -3169,7 +3535,86 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   loadTestModeSettings();
 
+  function collectNonDefaultEncodeParams(cfg) {
+    const c = cfg && typeof cfg === "object" ? cfg : {};
+    const rows = [];
+
+    const push = (key, value) => {
+      if (value === undefined || value === null || value === "") return;
+      rows.push({ key, value: String(value) });
+    };
+
+    const crf = Number(c.crf);
+    if (Number.isFinite(crf) && crf !== 35) push("crf", crf);
+
+    const presetSpeed = Number(c.preset);
+    if (Number.isFinite(presetSpeed) && presetSpeed !== 3) push("preset", presetSpeed);
+
+    const resolution = c.resolution_target || "source";
+    if (resolution !== "source") push("resolution_target", resolution);
+
+    const audio51 = c.audio_bitrate_51 || "320k";
+    if (audio51 !== "320k") push("audio_bitrate_51", audio51);
+
+    const audioStereo = c.audio_bitrate_stereo || "160k";
+    if (audioStereo !== "160k") push("audio_bitrate_stereo", audioStereo);
+
+    const audioFmt = c.audio_format || "opus";
+    if (audioFmt !== "opus") push("audio_format", audioFmt);
+
+    const container = c.container || "mp4";
+    if (container !== "mp4") push("container", container);
+
+    if (c.autocrop === false) push("autocrop", "off");
+    if (c.ssimu2_post === true) push("ssimu2_post", "on");
+    if (c.extract_subtitles === false) push("extract_subtitles", "off");
+    if (c.audio_best_only === false) push("audio_best_only", "off");
+
+    if (Array.isArray(c.audio_languages) && c.audio_languages.length) {
+      const def = DEFAULT_AUDIO_LANGUAGES.join(",");
+      if (c.audio_languages.map(langFamily).join(",") !== def) {
+        push("audio_languages", c.audio_languages.join(", "));
+      }
+    }
+
+    if (c.test_mode) {
+      push("test_mode", `${c.trim_start || "?"} → ${c.trim_end || "?"}`);
+    }
+
+    const svt = (c.svt_params && typeof c.svt_params === "object") ? c.svt_params : {};
+    Object.keys(svt).sort().forEach(key => {
+      const val = svt[key];
+      const def = ESSENTIAL_SVT_SETTINGS.find(d => d.key === key);
+      if (def && isSvtDefault(def, val)) return;
+      // lp default is 0 (omit); low-memory default off
+      if (key === "lp" && Number(val) === 0) return;
+      if (key === "low-memory" && Number(val) === 0) return;
+      push(key, val);
+    });
+
+    return rows;
+  }
+
+  function renderEditJobParams(cfg, opts = {}) {
+    const el = document.getElementById("editJobParams");
+    if (!el) return;
+    const rows = collectNonDefaultEncodeParams(cfg);
+    const note = opts.outdated
+      ? `<p class="edit-job-params-note">Outdated from preset — showing this job’s snapshotted settings.</p>`
+      : "";
+    if (!rows.length) {
+      el.innerHTML = `${note}<div class="edit-job-params-empty">All settings at defaults.</div>`;
+      return;
+    }
+    el.innerHTML = note + rows.map(r => `
+      <div class="edit-job-params-row">
+        <span class="edit-job-params-key">${escapeHtml(r.key)}</span>
+        <span class="edit-job-params-val">${escapeHtml(r.value)}</span>
+      </div>`).join("");
+  }
+
   function closeEditJobModal() {
+    editJobPreviewJob = null;
     if (editJobModal) editJobModal.classList.add("hidden");
   }
 
@@ -3180,21 +3625,16 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (!editJobModal) return;
+    editJobPreviewJob = job;
     editJobId.value = job.id;
-    editJobFileName.textContent = job.filename;
 
     const tag = job.media_tag || {};
     const editTitle = document.getElementById("editJobTitle");
     const editYear = document.getElementById("editJobYear");
     const editImdb = document.getElementById("editJobImdb");
-    const editOut = document.getElementById("editJobOutputName");
     if (editTitle) editTitle.value = tag.title || "";
     if (editYear) editYear.value = tag.year != null ? String(tag.year) : "";
     if (editImdb) editImdb.value = tag.imdb_id || "";
-    if (editOut) {
-      const outName = (job.output_path || "").split(/[\\/]/).pop() || tag.library_name || "—";
-      editOut.textContent = outName;
-    }
 
     if (editJobPreset) {
       editJobPreset.innerHTML = (allPresets || []).map(p =>
@@ -3202,7 +3642,24 @@ document.addEventListener("DOMContentLoaded", () => {
       ).join("");
       const pid = job.config?.preset_id || selectedPreset;
       if (pid && allPresets.some(p => p.id === pid)) editJobPreset.value = pid;
+      editJobPreset.onchange = () => {
+        const chosen = allPresets.find(p => p.id === editJobPreset.value);
+        if (!chosen) return;
+        // Preview what Save would apply from the newly selected preset
+        renderEditJobParams(buildConfigFromPreset(chosen, {
+          audio_tracks_order: job.config?.audio_tracks_order,
+          test_mode: job.config?.test_mode,
+          trim_start: job.config?.trim_start,
+          trim_end: job.config?.trim_end
+        }), { outdated: false });
+        refreshEditJobNamePreview();
+      };
     }
+
+    refreshEditJobNamePreview();
+
+    renderEditJobParams(job.config || {}, { outdated: isJobPresetOutdated(job) });
+    showEditJobSection("details");
 
     const rawTracks = job.media_info?.audio_tracks || [];
     const order = job.config?.audio_tracks_order;
@@ -3226,24 +3683,25 @@ document.addEventListener("DOMContentLoaded", () => {
       const tracks = orderTracksByLanguage(rawTracks, autoPrefs.languages);
       const autoSelected = getAutoSelectedTrackIds(tracks, autoPrefs);
       editJobAudioTracks.innerHTML = tracks.map((t) => {
-        const layout = (t.layout_desc || "").trim();
+        const layout = audioLayoutDesc(t);
         const rawTitle = (t.title || "").trim();
         let trackTitle = rawTitle || layout || `${(t.language || "und").toUpperCase()} Audio`;
         const checked = !hasExplicitOrder
           ? (autoSelected.has(t.stream_index) ? "checked" : "")
           : (selected.has(t.stream_index) ? "checked" : "");
+        const badge = audioTrackEncodeBadge(t);
         return `
-          <div class="track-row" data-sidx="${t.stream_index}">
-            <input type="checkbox" ${checked} class="edit-track-checkbox" data-sidx="${t.stream_index}">
+          <label class="track-row" data-sidx="${t.stream_index}">
+            <input type="checkbox" ${checked} class="track-checkbox edit-track-checkbox" data-sidx="${t.stream_index}">
             <div class="track-info">
               <div class="track-primary">
-                <span class="track-lang">${(t.language || "und").toUpperCase()}</span>
+                <span class="track-lang ${langToneClass(t.language)}">${(t.language || "und").toUpperCase()}</span>
                 <span class="track-title" title="${escapeHtml(trackTitle)}">${escapeHtml(trackTitle)}</span>
               </div>
-              <span class="track-desc">${escapeHtml(t.channel_layout || "")} (${t.channels}ch) • ${escapeHtml(t.codec || "")}</span>
+              <span class="track-desc">${escapeHtml(t.codec || "")}</span>
             </div>
-            <span class="track-badge">${escapeHtml(layout || "")}</span>
-          </div>`;
+            <span class="track-badge">${escapeHtml(badge)}</span>
+          </label>`;
       }).join("");
     }
     }
@@ -3253,6 +3711,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (btnCancelEditJob) btnCancelEditJob.addEventListener("click", closeEditJobModal);
   if (btnCloseEditJob) btnCloseEditJob.addEventListener("click", closeEditJobModal);
+
+  ["editJobTitle", "editJobYear", "editJobImdb"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("input", refreshEditJobNamePreview);
+    el.addEventListener("change", refreshEditJobNamePreview);
+  });
+
   if (btnSaveEditJob) {
     btnSaveEditJob.addEventListener("click", async () => {
       const jid = editJobId?.value;
@@ -3367,7 +3833,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="card" style="text-align: center; padding: 40px 20px; color: var(--text-dim);">
           <div style="font-size: 32px; margin-bottom: 8px;">📁</div>
           <h3>No Finished Encodes Yet</h3>
-          <p>Completed jobs will be permanently saved here with full reports, bitrate reductions, and logs.</p>
+          <p>Completed, skipped, and failed jobs are saved here with reports and logs.</p>
         </div>
       `;
       return;
@@ -3411,34 +3877,50 @@ document.addEventListener("DOMContentLoaded", () => {
         : "";
 
       const isSkipped = item.status === "SKIPPED" || item.stats?.skipped;
-      const sizePill = isSkipped
-        ? "original kept (not encoded)"
-        : (item.config?.test_mode
-          ? `${finalMB} MB`
-          : `${reduction} (${origMB} MB ➔ ${finalMB} MB)`);
-      const skipBadge = isSkipped
-        ? `<span class="h-stats-pill badge-test" title="${escapeHtml(item.skip_reason || item.stats?.reason || "Skipped")}">SKIPPED</span>`
-        : "";
+      const isFailed = item.status === "FAILED" || !!item.stats?.failed;
+      const isCancelled = item.status === "CANCELLED" || !!item.stats?.cancelled;
+      const sizePill = isFailed
+        ? (item.error || item.stats?.error || "encode failed")
+        : (isCancelled
+          ? (item.error || "cancelled")
+          : (isSkipped
+            ? "original kept (not encoded)"
+            : (item.config?.test_mode
+              ? `${finalMB} MB`
+              : `${reduction} (${origMB} MB ➔ ${finalMB} MB)`)));
+      const statusBadge = isFailed
+        ? `<span class="h-stats-pill h-failed-pill" title="${escapeHtml(item.error || item.stats?.error || "Failed")}">FAILED</span>`
+        : (isCancelled
+          ? `<span class="h-stats-pill h-cancelled-pill" title="${escapeHtml(item.error || "Cancelled")}">CANCELLED</span>`
+          : (isSkipped
+            ? `<span class="h-stats-pill badge-test" title="${escapeHtml(item.skip_reason || item.stats?.reason || "Skipped")}">SKIPPED</span>`
+            : ""));
+      const folderPath = (isFailed || isCancelled || isSkipped)
+        ? (item.input_path || outPath)
+        : outPath;
+      const folderTitle = (isFailed || isCancelled || isSkipped)
+        ? "Open source folder"
+        : "Open output folder";
 
       return `
         <div class="history-card" data-id="${item.id}">
           <div class="history-card-left">
             <div class="h-title" title="${escapeHtml(outPath || outName)}">${escapeHtml(outName)}</div>
             <div class="h-meta-row">
-              ${skipBadge}
-              ${ssimu2Html}
-              <span class="h-stats-pill">${sizePill}</span>
-              ${testHtml}
+              ${statusBadge}
+              ${(!isFailed && !isCancelled) ? ssimu2Html : ""}
+              <span class="h-stats-pill${isFailed || isCancelled ? " h-error-pill" : ""}" title="${escapeHtml(sizePill)}">${escapeHtml(sizePill.length > 80 ? sizePill.slice(0, 77) + "…" : sizePill)}</span>
+              ${(!isFailed && !isCancelled) ? testHtml : ""}
               <span class="badge q-preset-badge">${escapeHtml(item.config?.preset_name || "—")}</span>
               <span>•</span>
               <span class="badge badge-hdr">${escapeHtml(hdrLabel)}</span>
-              ${audioBadge}
+              ${(!isFailed && !isCancelled) ? audioBadge : ""}
               <span>•</span>
               <span>Run: ${durStr}</span>
             </div>
           </div>
           <div class="history-card-right">
-            <button class="btn btn-outline btn-sm btn-open-folder" data-path="${escapeHtml(outPath)}" title="Open output folder" aria-label="Open output folder">
+            <button class="btn btn-outline btn-sm btn-open-folder" data-path="${escapeHtml(folderPath)}" title="${folderTitle}" aria-label="${folderTitle}">
               <svg class="btn-glyph" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.2c.3 0 .6.1.8.3L8.3 3.5H13A1.5 1.5 0 0 1 14.5 5v7A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V3.5zm1.5 0V12h10V5H7.8L6.5 3.5H3z"/></svg>
             </button>
             <button class="btn btn-outline btn-sm btn-view-log" data-id="${item.id}" title="Report" aria-label="Report">
@@ -3549,66 +4031,140 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function openLogReportModal(job) {
     logReportModal.classList.remove("hidden");
-    logModalTitle.textContent = `Report: ${job.filename}`;
+    const displayName = (job.output_path || "").split(/[\\/]/).pop()
+      || job.filename
+      || "Encode";
+    logModalTitle.textContent = `Report: ${displayName}`;
 
-    const origMB = Math.round((job.stats?.original_bytes || 0) / (1024 * 1024));
-    const finalMB = Math.round((job.stats?.final_bytes || 0) / (1024 * 1024));
-    const reduction = job.stats?.reduction_percent !== undefined ? `-${job.stats.reduction_percent}%` : "--";
+    const status = String(job.status || "").toUpperCase();
+    const isFailed = status === "FAILED" || !!job.stats?.failed;
+    const isCancelled = status === "CANCELLED" || !!job.stats?.cancelled;
+    const isSkipped = status === "SKIPPED" || !!job.stats?.skipped;
+    const isProblem = isFailed || isCancelled;
+
     const durStr = formatSeconds(job.stats?.duration_seconds || job.elapsed_seconds || 0);
     const dateStr = formatDateTime(job.completed_at);
-    const ssimu2Avg = job.stats?.ssimu2_avg;
-    const ssimu2P15Val = Number(job.stats?.ssimu2_p15 ?? 0);
-    const ssimu2MinVal = Number(job.stats?.ssimu2_min ?? 0);
-    const ssimu2Box = (ssimu2Avg !== undefined && ssimu2Avg !== null) ? `
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">SSIMU2 Avg</span>
-        <span class="rep-stat-val" style="color: ${ssimu2Color(Number(ssimu2Avg))};">${Number(ssimu2Avg).toFixed(2)}</span>
-      </div>
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">SSIMU2 p15</span>
-        <span class="rep-stat-val" style="color: ${ssimu2Color(ssimu2P15Val)};">${ssimu2P15Val.toFixed(2)}</span>
-      </div>
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">SSIMU2 min</span>
-        <span class="rep-stat-val" style="color: ${ssimu2Color(ssimu2MinVal)};">${ssimu2MinVal.toFixed(2)}</span>
-      </div>` : "";
+    const presetName = escapeHtml(
+      job.config?.preset_name
+        || (Number.isFinite(Number(job.config?.crf)) ? `CRF ${Number(job.config.crf)}` : "—")
+    );
 
-    const estFullBytes = job.stats?.estimated_full_bytes;
-    const estFullBox = (job.stats?.test_mode && estFullBytes) ? `
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl" title="Extrapolated from this segment's size/duration ratio — video is CRF-mode, so this assumes the tested segment's complexity is representative of the whole title.">Est. Full-Length Size</span>
-        <span class="rep-stat-val">${formatBytesShort(estFullBytes)}</span>
-      </div>` : "";
-    const completedBox = dateStr ? `
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">Completed</span>
-        <span class="rep-stat-val" style="font-size: 0.95em;">${escapeHtml(dateStr)}</span>
-      </div>` : "";
+    if (isProblem) {
+      const errText = job.error || job.stats?.error || job.stage || "Unknown error";
+      const statusLabel = isCancelled ? "Cancelled" : "Failed";
+      const statusColor = isCancelled ? "var(--text-muted)" : "var(--accent-rose)";
+      const whenLbl = isCancelled ? "Cancelled" : "Failed";
+      const whenBox = dateStr ? `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">${whenLbl}</span>
+          <span class="rep-stat-val" style="font-size: 0.95em;">${escapeHtml(dateStr)}</span>
+        </div>` : "";
+      logReportSummary.innerHTML = `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Status</span>
+          <span class="rep-stat-val" style="color: ${statusColor};">${statusLabel}</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Elapsed</span>
+          <span class="rep-stat-val">${durStr}</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Preset</span>
+          <span class="rep-stat-val">${presetName}</span>
+        </div>
+        ${whenBox}
+        <div class="rep-error-box">
+          <span class="rep-stat-lbl">Error</span>
+          <pre class="rep-error-text">${escapeHtml(errText)}</pre>
+        </div>
+      `;
+    } else if (isSkipped) {
+      const reason = job.skip_reason || job.stats?.reason || "Skipped — original file kept";
+      const whenBox = dateStr ? `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Skipped</span>
+          <span class="rep-stat-val" style="font-size: 0.95em;">${escapeHtml(dateStr)}</span>
+        </div>` : "";
+      logReportSummary.innerHTML = `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Status</span>
+          <span class="rep-stat-val" style="color: var(--text-muted);">Skipped</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Elapsed</span>
+          <span class="rep-stat-val">${durStr}</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Preset</span>
+          <span class="rep-stat-val">${presetName}</span>
+        </div>
+        ${whenBox}
+        <div class="rep-error-box">
+          <span class="rep-stat-lbl">Reason</span>
+          <pre class="rep-error-text">${escapeHtml(reason)}</pre>
+        </div>
+      `;
+    } else {
+      const origMB = Math.round((job.stats?.original_bytes || 0) / (1024 * 1024));
+      const finalMB = Math.round((job.stats?.final_bytes || 0) / (1024 * 1024));
+      const reduction = job.stats?.reduction_percent !== undefined ? `-${job.stats.reduction_percent}%` : "--";
+      const ssimu2Avg = job.stats?.ssimu2_avg;
+      const ssimu2P15Val = Number(job.stats?.ssimu2_p15 ?? 0);
+      const ssimu2MinVal = Number(job.stats?.ssimu2_min ?? 0);
+      const ssimu2Box = (ssimu2Avg !== undefined && ssimu2Avg !== null) ? `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">SSIMU2 Avg</span>
+          <span class="rep-stat-val" style="color: ${ssimu2Color(Number(ssimu2Avg))};">${Number(ssimu2Avg).toFixed(2)}</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">SSIMU2 p15</span>
+          <span class="rep-stat-val" style="color: ${ssimu2Color(ssimu2P15Val)};">${ssimu2P15Val.toFixed(2)}</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">SSIMU2 min</span>
+          <span class="rep-stat-val" style="color: ${ssimu2Color(ssimu2MinVal)};">${ssimu2MinVal.toFixed(2)}</span>
+        </div>` : "";
 
-    logReportSummary.innerHTML = `
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">Space Saved</span>
-        <span class="rep-stat-val" style="color: var(--accent-emerald);">${reduction}</span>
-      </div>
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">Original ➔ Final</span>
-        <span class="rep-stat-val">${origMB} MB ➔ ${finalMB} MB</span>
-      </div>
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">Encode Time</span>
-        <span class="rep-stat-val">${durStr}</span>
-      </div>
-      <div class="rep-stat-box">
-        <span class="rep-stat-lbl">Preset</span>
-        <span class="rep-stat-val">${escapeHtml(job.config?.preset_name || (Number.isFinite(Number(job.config?.crf)) ? `CRF ${Number(job.config.crf)}` : "—"))}</span>
-      </div>
-      ${completedBox}
-      ${estFullBox}
-      ${ssimu2Box}
-    `;
+      const estFullBytes = job.stats?.estimated_full_bytes;
+      const estFullBox = (job.stats?.test_mode && estFullBytes) ? `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl" title="Extrapolated from this segment's size/duration ratio — video is CRF-mode, so this assumes the tested segment's complexity is representative of the whole title.">Est. Full-Length Size</span>
+          <span class="rep-stat-val">${formatBytesShort(estFullBytes)}</span>
+        </div>` : "";
+      const completedBox = dateStr ? `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Completed</span>
+          <span class="rep-stat-val" style="font-size: 0.95em;">${escapeHtml(dateStr)}</span>
+        </div>` : "";
 
-    const logs = job.logs || ["No log entries recorded."];
+      logReportSummary.innerHTML = `
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Space Saved</span>
+          <span class="rep-stat-val" style="color: var(--accent-emerald);">${reduction}</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Original ➔ Final</span>
+          <span class="rep-stat-val">${origMB} MB ➔ ${finalMB} MB</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Encode Time</span>
+          <span class="rep-stat-val">${durStr}</span>
+        </div>
+        <div class="rep-stat-box">
+          <span class="rep-stat-lbl">Preset</span>
+          <span class="rep-stat-val">${presetName}</span>
+        </div>
+        ${completedBox}
+        ${estFullBox}
+        ${ssimu2Box}
+      `;
+    }
+
+    const logs = (job.logs && job.logs.length)
+      ? job.logs
+      : ["No log entries recorded."];
     logModalContent.innerHTML = logs.map(l => `<div>${escapeHtml(l)}</div>`).join("");
+    logModalContent.scrollTop = logModalContent.scrollHeight;
   }
 
   btnCloseLogModal.addEventListener("click", () => logReportModal.classList.add("hidden"));

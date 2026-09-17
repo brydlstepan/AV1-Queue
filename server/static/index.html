@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=pass19">
+  <link rel="stylesheet" href="/static/app.css?v=pass33">
 </head>
 <body>
   <div class="app-container">
@@ -544,17 +544,17 @@ Default: PSNR</span>
               </div>
               <div class="setting-row is-default" data-pipeline-key="preserveDoviRpu">
                 <label class="setting-label" for="globalPreserveDoviRpu">
-                  <span class="setting-label-text">Preserve Dolby Vision RPU (experimental)</span>
+                  <span class="setting-label-text">Preserve Dolby Vision RPU</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">For DoVi P7/P8.1 sources (base layer already valid HDR10), extracts the RPU with dovi_tool, converts it to profile 10, and passes it to SVT-AV1-Tritium via --dolby-vision-rpu alongside the HDR10 base layer. Non-DoVi clients read the HDR10 layer and ignore the RPU, so this never hurts compatibility — it only helps DoVi-capable AV1 clients, which are still rare today. P5 sources still can't be helped by this and are always skipped; requires bin/dovi_tool.exe (installed by setup) and a matching SVT-AV1-Tritium build.</span>
+                    <span class="setting-help-tip" role="tooltip">For DoVi P7/P8.1 sources (base layer already valid HDR10), extracts the raw RPU with dovi_tool and passes it unconverted to SVT-AV1-Tritium via --dolby-vision-rpu (built on libdovi, same as dovi_tool) alongside the HDR10 base layer. Non-DoVi clients read the HDR10 layer and ignore the RPU, so this never hurts compatibility — it only helps DoVi-capable AV1 clients, which are still rare today. On any job where Autocrop actually crops the frame, the RPU's active-area metadata is corrected first via dovi_tool editor ({"active_area":{"crop":true}}, the documented fix for a video with no letterbox bars) so it matches the cropped picture; if that correction itself fails, RPU passthrough falls back to HDR10-only for that job. P5 sources still can't be helped by this and are always skipped; requires bin/dovi_tool.exe (installed by setup) and a matching SVT-AV1-Tritium build.</span>
                   </span>
                 </label>
-                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalPreserveDoviRpu" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalPreserveDoviRpu" title="Reset to default (On)" aria-label="Reset to default">↺</button>
                 <div class="setting-control">
-                  <button type="button" class="svt-toggle pipeline-toggle" id="globalPreserveDoviRpu" role="switch" aria-checked="false" data-default="false">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalPreserveDoviRpu" role="switch" aria-checked="true" data-default="true">
                     <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
-                    <span class="svt-toggle-label">Off</span>
+                    <span class="svt-toggle-label">On</span>
                   </button>
                 </div>
               </div>
@@ -1028,46 +1028,73 @@ Default: PSNR</span>
 
     <!-- Edit Queue Item Modal -->
     <div class="modal-backdrop hidden" id="editJobModal">
-      <div class="modal-window">
+      <div class="modal-window modal-window-scrollable">
         <div class="modal-header">
           <h3>Edit Queue Item</h3>
           <button class="modal-close" id="btnCloseEditJob">✕</button>
         </div>
         <div class="modal-body">
           <input type="hidden" id="editJobId">
-          <div class="form-group">
-            <label>File</label>
-            <div class="edit-job-filename" id="editJobFileName">—</div>
+          <div class="preset-section-tabs">
+            <button type="button" class="tab-btn active" id="editJobTabDetails">Details</button>
+            <button type="button" class="tab-btn" id="editJobTabAudio">Audio</button>
+            <button type="button" class="tab-btn" id="editJobTabParams">Parameters</button>
           </div>
-          <div class="form-group">
-            <label for="editJobTitle">Library title</label>
-            <input type="text" id="editJobTitle" class="form-input" placeholder="Spider-Man Far from Home">
-          </div>
-          <div class="form-group" style="display:flex;gap:10px;">
-            <div style="flex:1;">
-              <label for="editJobYear">Year</label>
-              <input type="number" id="editJobYear" class="form-input" placeholder="2019" min="1900" max="2100">
+
+          <div id="editJobDetailsSection">
+            <div class="preset-settings-fields scroll-thin">
+              <div class="form-group">
+                <label>Output name</label>
+                <div class="edit-job-filename" id="editJobFileName" title="">—</div>
+              </div>
+              <div class="form-group">
+                <label for="editJobTitle">Library title</label>
+                <input type="text" id="editJobTitle" class="form-input" placeholder="Spider-Man Far from Home">
+              </div>
+              <div class="form-group" style="display:flex;gap:10px;">
+                <div style="flex:1;">
+                  <label for="editJobYear">Year</label>
+                  <input type="number" id="editJobYear" class="form-input" placeholder="2019" min="1900" max="2100">
+                </div>
+                <div style="flex:2;">
+                  <label for="editJobImdb">IMDb ID</label>
+                  <input type="text" id="editJobImdb" class="form-input" placeholder="tt6320628">
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="editJobPreset">Quality Preset</label>
+                <select id="editJobPreset" class="form-input">
+                  <!-- Populated dynamically -->
+                </select>
+              </div>
             </div>
-            <div style="flex:2;">
-              <label for="editJobImdb">IMDb ID</label>
-              <input type="text" id="editJobImdb" class="form-input" placeholder="tt6320628">
+          </div>
+
+          <div id="editJobAudioSection" class="hidden">
+            <div class="preset-settings-fields scroll-thin">
+              <div class="form-group" style="margin-bottom: 0;">
+                <label>Audio Tracks</label>
+                <div class="insp-tracks-list scroll-thin" id="editJobAudioTracks"></div>
+              </div>
             </div>
           </div>
-          <div class="form-group">
-            <label>Proposed output</label>
-            <div class="edit-job-filename" id="editJobOutputName">—</div>
+
+          <div id="editJobParamsSection" class="hidden">
+            <div class="preset-settings-fields scroll-thin">
+              <div class="edit-job-params-header">
+                <span class="edit-job-params-title">Non-default encode parameters</span>
+                <span class="setting-help" tabindex="0" aria-label="Help">
+                  <span class="setting-help-icon">?</span>
+                  <span class="setting-help-tip" role="tooltip">Settings snapshotted on this queue item. Shown even when the job is outdated from its preset — these are what will encode until you save a new preset selection.</span>
+                </span>
+              </div>
+              <div class="edit-job-params scroll-thin" id="editJobParams">
+                <div class="edit-job-params-empty">All settings at defaults.</div>
+              </div>
+            </div>
           </div>
-          <div class="form-group">
-            <label for="editJobPreset">Quality Preset</label>
-            <select id="editJobPreset" class="form-input">
-              <!-- Populated dynamically -->
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Audio Tracks</label>
-            <div class="insp-tracks-list" id="editJobAudioTracks"></div>
-          </div>
-          <div class="modal-actions-row" style="margin-top: 20px;">
+
+          <div class="modal-actions-row">
             <button type="button" class="btn btn-outline" id="btnCancelEditJob" style="margin-right: 10px;">Cancel</button>
             <button type="button" class="btn btn-primary" id="btnSaveEditJob">Save</button>
           </div>
@@ -1120,6 +1147,6 @@ Default: PSNR</span>
     </div>
   </div>
 
-  <script src="/static/app.js?v=pass17"></script>
+  <script src="/static/app.js?v=pass33"></script>
 </body>
 </html>
