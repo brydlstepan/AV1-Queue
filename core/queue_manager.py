@@ -711,22 +711,34 @@ class QueueManager:
     def reorder_jobs(self, ordered_ids: List[str]) -> List[Dict[str, Any]]:
         """Reorder the queue to match ordered_ids (first QUEUED is next to encode).
 
-        Any job IDs not listed are appended in their previous relative order.
+        Active encodes (EXTRACTING / FINAL_ENCODE / REMUXING) stay pinned at the
+        front in their previous relative order and are ignored in ordered_ids —
+        they are not drag-reorderable. Any other job IDs not listed are appended
+        in their previous relative order.
         """
+        active_statuses = {
+            JobStatus.EXTRACTING,
+            JobStatus.FINAL_ENCODE,
+            JobStatus.REMUXING,
+        }
         with self._lock:
-            by_id = {j["id"]: j for j in self.jobs}
+            active = [j for j in self.jobs if j.get("status") in active_statuses]
+            active_ids = {j["id"] for j in active}
+            by_id = {j["id"]: j for j in self.jobs if j["id"] not in active_ids}
             seen: Set[str] = set()
-            new_jobs: List[Dict[str, Any]] = []
+            new_rest: List[Dict[str, Any]] = []
             for jid in ordered_ids:
-                job = by_id.get(jid)
-                if not job or jid in seen:
+                if jid in active_ids or jid in seen:
                     continue
-                new_jobs.append(job)
+                job = by_id.get(jid)
+                if not job:
+                    continue
+                new_rest.append(job)
                 seen.add(jid)
             for j in self.jobs:
-                if j["id"] not in seen:
-                    new_jobs.append(j)
-            self.jobs = new_jobs
+                if j["id"] not in active_ids and j["id"] not in seen:
+                    new_rest.append(j)
+            self.jobs = active + new_rest
             result = list(self.jobs)
         self.save_queue()
         self.emit_event("queue_reordered", {"job_ids": [j["id"] for j in result]})
@@ -919,13 +931,18 @@ class QueueManager:
         print(f"[queue] Job {job_id} skipped: {reason}")
 
     def _finalize_failed(self, job, job_id, start_time, error: str, cancelled: bool = False) -> None:
-        """Archive a failed/cancelled encode to history with logs for debugging."""
+        """Finish a failed or cancelled encode.
+
+        Cancelled jobs stay in the pending queue (Reset to re-run). Failed jobs
+        are archived to Finished with logs for debugging.
+        """
         status = JobStatus.CANCELLED if cancelled else JobStatus.FAILED
         job["status"] = status
         job["stage"] = f"{'Cancelled' if cancelled else 'Error'}: {error}"
         job["error"] = error
         job["elapsed_seconds"] = int(time.time() - start_time)
         job["completed_at"] = time.time()
+        job["pid"] = None
         logs = job.setdefault("logs", [])
         marker = "CANCELLED" if cancelled else "FAILED"
         logs.append(f"{marker}: {error}")
@@ -944,8 +961,14 @@ class QueueManager:
             "duration_seconds": job["elapsed_seconds"],
             "error": error,
         }
+        if cancelled:
+            # Keep in queue for Reset — do not move to Finished.
+            self.save_queue()
+            self.emit_event("job_update", job)
+            print(f"[!] Job {job_id} cancelled: {error}")
+            return
         self._archive_job_to_history(job, job_id)
-        print(f"[!] Job {job_id} {status.lower()}: {error}")
+        print(f"[!] Job {job_id} failed: {error}")
 
     def _execute_single_job(self, job: Dict[str, Any]):
         job_id = job["id"]
@@ -1843,8 +1866,8 @@ class QueueManager:
             except Exception:
                 pass
             self.save_queue()
-            # Only push live updates for jobs still in the pending queue (failed/cancelled).
-            # Completed jobs were already moved to history + job_removed.
+            # Push a live update when the job is still pending (cancelled stays in queue).
+            # Completed / failed were already moved to history + job_removed.
             with self._lock:
                 still_pending = any(j["id"] == job_id for j in self.jobs)
             if still_pending:
