@@ -1,6 +1,6 @@
 {
-  "id": "balanced",
-  "name": "4K (HQ)",
+  "id": "preset_1789589249075",
+  "name": "Skibidi",
   "description": "",
   "crf": 32.0,
   "preset": 3,
@@ -10,13 +10,13 @@
   "audio_languages": null,
   "audio_best_only": true,
   "svt_params": {
-    "adaptive-film-grain": 1,
+    "enable-dlf": 2,
+    "alt-lambda-factors": 0,
     "tx-bias": 2,
-    "complex-hvs": 1,
-    "film-grain": 10,
+    "enable-restoration": 0,
+    "enable-alt-cdef": 2,
     "qm-min": 4,
-    "qm-max": 14,
-    "noise": 8,
-    "tune": 5
+    "qm-max": 15,
+    "tune": 0
   }
 }
