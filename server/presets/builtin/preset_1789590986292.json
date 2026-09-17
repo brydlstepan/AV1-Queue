@@ -1,6 +1,6 @@
 {
-  "id": "preset_1789590986291",
-  "name": "4K (noise)",
+  "id": "preset_1789590986292",
+  "name": "4K",
   "description": "",
   "crf": 34.0,
   "preset": 3,
@@ -10,7 +10,7 @@
   "audio_languages": null,
   "audio_best_only": true,
   "svt_params": {
-    "noise": 30,
+    "noise": 15,
     "noise-chroma-from-luma": 1,
     "noise-size": 6,
     "noise-adaptive-filtering": 0,
