@@ -920,6 +920,62 @@ class HDRDoviProcessor:
         log(f"Dolby Vision RPU ready ({out_rpu.name}, {out_rpu.stat().st_size} bytes)")
         return out_rpu
 
+    def apply_dovi_crop_edit(
+        self,
+        rpu_path: Path,
+        out_rpu: Path,
+        progress_cb: Optional[Callable[[str], None]] = None,
+    ) -> Optional[Path]:
+        """
+        Zero a DoVi RPU's active-area offsets via dovi_tool editor.
+
+        The RPU is extracted from the *uncropped* source, but SVT then encodes
+        an autocropped (letterbox-removed) frame. Active area (L5/L8) offsets
+        in the untouched RPU would describe bars that no longer exist in the
+        encoded picture. dovi_tool's documented editor JSON config
+        {"active_area": {"crop": true}} is exactly the fix quietvoid ships for
+        this: "should be set to true when final video has no letterbox bars"
+        (docs/editor.md, assets/editor_examples/crop.json). No "mode" key is
+        set — that field retargets HEVC-specific profiles (8.1 Blu-ray compat,
+        MEL, 8.4) and doesn't apply to our AV1/profile-10 RPU, same reasoning
+        as extract_dovi_rpu passing the RPU through unconverted.
+        """
+        if not self.dovi_tool.is_file():
+            return None
+
+        def log(msg: str):
+            if progress_cb:
+                progress_cb(msg)
+
+        rpu_path = Path(rpu_path)
+        out_rpu = Path(out_rpu)
+        out_rpu.parent.mkdir(parents=True, exist_ok=True)
+        config_path = out_rpu.with_suffix(".editcfg.json")
+        try:
+            config_path.write_text(
+                json.dumps({"active_area": {"crop": True}}), encoding="utf-8"
+            )
+        except Exception as e:
+            log(f"Could not write dovi_tool editor config: {e}")
+            return None
+
+        dt = subprocess.run(
+            [str(self.dovi_tool), "editor", "-i", str(rpu_path), "-j", str(config_path), "-o", str(out_rpu)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        try:
+            config_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if dt.returncode != 0 or not out_rpu.is_file() or out_rpu.stat().st_size < 64:
+            log(f"dovi_tool editor (active-area crop) failed: {(dt.stderr or dt.stdout or '')[-400:]}")
+            return None
+        log(f"Dolby Vision RPU active area corrected for autocrop ({out_rpu.name})")
+        return out_rpu
+
     @staticmethod
     def _ffmpeg_color_args(transfer_code: str, color_range: str = "tv") -> List[str]:
         """

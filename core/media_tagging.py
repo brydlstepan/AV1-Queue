@@ -357,7 +357,8 @@ def quality_tag(
     # never let a filename "DoVi"/"HDR10plus" claim override a probe that
     # found no such layer (would misname encodes without RPU/HDR10+ JSON).
     # hdr_label returns "" for SDR, so this only ever fills a genuine gap.
-    # Filename DoVi hints map to HDR10 — we never emit Dolby Vision.
+    # Filename DoVi hints map to HDR10 — the filename tag always names the base
+    # layer, even when DoVi RPU passthrough is on (see hdr_label above).
     if not hdr and hint_hdr:
         hdr = "HDR10" if hint_hdr == "DoVi" else hint_hdr
     parts = [p for p in (res, hdr) if p]

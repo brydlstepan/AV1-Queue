@@ -5,7 +5,7 @@ Handles:
 - Dolby Vision / HDR10 metadata detection (SVT color flags)
 - Direct SVT-AV1-Tritium encode (core/svt_encode.py) with real-time progress parsing
 - Final Web-Optimized MP4 / WebM muxing (+faststart, stripped chapters/subtitles, ISO language tags)
-- HDR10 static color tags + HDR10+ passthrough; Dolby Vision is never emitted (see README.md)
+- HDR10 static color tags + HDR10+ passthrough; DoVi RPU passthrough is opt-in (see README.md)
 - Temporary cache cleanup
 """
 
@@ -1068,6 +1068,7 @@ class TranscodePipeline:
         stage_num = 1
         output_error = []
         line_buf = ""
+        recent_lines: List[str] = []
 
         def handle_text(text: str) -> None:
             nonlocal line_buf
@@ -1098,6 +1099,10 @@ class TranscodePipeline:
                             "raw_log": "",  # UI-only — do not spam job log
                         })
                     continue
+
+                recent_lines.append(line_str)
+                if len(recent_lines) > 40:
+                    recent_lines.pop(0)
 
                 pct_match = re.search(r"(\d{1,3}(?:\.\d+)?)%", line_str)
                 fps_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:fps|FPS)", line_str, re.I)
@@ -1148,7 +1153,9 @@ class TranscodePipeline:
             if ret_code != 0:
                 if cancel_event and cancel_event.is_set():
                     raise RuntimeError("Encode cancelled by user.")
-                raise RuntimeError(f"Encode failed with exit code {ret_code}.")
+                tail = "\n".join(recent_lines[-12:]).strip()
+                detail = f"\nLast encoder output:\n{tail}" if tail else ""
+                raise RuntimeError(f"Encode failed with exit code {ret_code}.{detail}")
         finally:
             self._untrack_process(process)
             self.current_process = None
@@ -1264,8 +1271,10 @@ class TranscodePipeline:
         good encode. (Must keep a real container extension — ffmpeg rejects
         ``*.mp4.partial``.)
 
-        MP4 / WebM: ffmpeg stream-copy (+ optional HDR10 color BSF). Dolby Vision
-        is never emitted (see README.md) — HDR10 static tags + HDR10+ passthrough only.
+        MP4 / WebM: ffmpeg stream-copy (+ optional HDR10 color BSF). Plain stream
+        copy — a DoVi RPU (opt-in, see README.md) is already baked into the AV1
+        bitstream by SvtAv1EncApp before this step ever runs, so mux does not
+        need to (and must not) touch it.
         """
         fmt = "webm" if str(container).lower() == "webm" else "mp4"
         ffmpeg = str(self.bin_dir / "ffmpeg.exe")

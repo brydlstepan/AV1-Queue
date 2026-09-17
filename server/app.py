@@ -160,6 +160,10 @@ class UpdateJobRequest(BaseModel):
     media_tag: Optional[Dict[str, Any]] = None
 
 
+class ReorderQueueRequest(BaseModel):
+    job_ids: List[str]
+
+
 class SettingsUpdateRequest(BaseModel):
     autoname_output: Optional[bool] = None
     name_template_movie: Optional[str] = None
@@ -418,6 +422,14 @@ async def update_job(req: UpdateJobRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/queue/reorder")
+async def reorder_queue(req: ReorderQueueRequest):
+    if not req.job_ids:
+        raise HTTPException(status_code=400, detail="Missing job_ids")
+    jobs = queue_mgr.reorder_jobs(req.job_ids)
+    return {"status": "ok", "jobs": jobs}
 
 
 @app.post("/api/queue/requeue")
