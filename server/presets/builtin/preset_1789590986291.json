@@ -3,7 +3,7 @@
   "name": "4K (noise)",
   "description": "",
   "crf": 34.0,
-  "preset": 3,
+  "preset": 2,
   "resolution_target": "2160p",
   "audio_bitrate_51": "320k",
   "audio_bitrate_stereo": "160k",
@@ -20,7 +20,6 @@
     "enable-tf": 3,
     "enable-cdef": 0,
     "enable-restoration": 0,
-    "enable-alt-cdef": 2,
     "tune": 0
   }
 }
