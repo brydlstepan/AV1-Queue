@@ -3,7 +3,7 @@
   "name": "4K",
   "description": "",
   "crf": 34.0,
-  "preset": 3,
+  "preset": 2,
   "resolution_target": "2160p",
   "audio_bitrate_51": "320k",
   "audio_bitrate_stereo": "160k",
