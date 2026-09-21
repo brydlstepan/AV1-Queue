@@ -5,7 +5,7 @@ Handles:
 - Dolby Vision / HDR10 metadata detection (SVT color flags)
 - Direct SVT-AV1-Tritium encode (core/svt_encode.py) with real-time progress parsing
 - Final Web-Optimized MP4 / WebM muxing (+faststart, stripped chapters/subtitles, ISO language tags)
-- HDR10 static color tags + HDR10+ passthrough; DoVi RPU passthrough is opt-in (see README.md)
+- HDR10 static color tags + HDR10+ passthrough; DoVi RPU passthrough is on by default (see README.md)
 - Temporary cache cleanup
 """
 
@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Tuple
 
 from core.hdr_dovi import HDRDoviProcessor
+from core.mp4_dovi import inject_dolby_vision
 from core.subtitle_extract import extract_text_subtitles
 from core.win_process import boost_process
 
@@ -1261,6 +1262,8 @@ class TranscodePipeline:
         container: str = "mp4",
         progress_cb: Optional[Callable[[str], None]] = None,
         color_args: Optional[List[str]] = None,
+        hdr_input_args: Optional[List[str]] = None,
+        inject_dovi: bool = False,
         cancel_event=None,
     ) -> Path:
         """
@@ -1271,10 +1274,18 @@ class TranscodePipeline:
         good encode. (Must keep a real container extension — ffmpeg rejects
         ``*.mp4.partial``.)
 
-        MP4 / WebM: ffmpeg stream-copy (+ optional HDR10 color BSF). Plain stream
-        copy — a DoVi RPU (opt-in, see README.md) is already baked into the AV1
-        bitstream by SvtAv1EncApp before this step ever runs, so mux does not
-        need to (and must not) touch it.
+        MP4 / WebM: ffmpeg stream-copy (+ optional HDR10 color BSF). A DoVi RPU
+        is already baked into the AV1 bitstream by SvtAv1EncApp before this step
+        ever runs, so mux must not touch the bitstream itself.
+
+        hdr_input_args (``-mastering_display`` / ``-content_light``) are ffmpeg
+        *input* options that make the muxer write the mdcv / clli container
+        metadata — the SVT flags only put it in the bitstream, and players that
+        read the container alone would otherwise see no HDR10 static metadata.
+
+        inject_dovi (MP4 only): ffmpeg cannot write the ``dvvC`` box from a raw
+        IVF, so core/mp4_dovi.py adds it afterwards. Without that box players
+        treat the file as plain HDR10 even though the RPU is in the stream.
         """
         fmt = "webm" if str(container).lower() == "webm" else "mp4"
         ffmpeg = str(self.bin_dir / "ffmpeg.exe")
@@ -1299,10 +1310,10 @@ class TranscodePipeline:
             else:
                 progress_cb("Muxing final Web-Optimized MP4 container...")
 
-        cmd = [
-            ffmpeg, "-y",
-            "-i", str(ivf_video)
-        ]
+        cmd = [ffmpeg, "-y"]
+        if hdr_input_args:
+            cmd.extend(list(hdr_input_args))
+        cmd.extend(["-i", str(ivf_video)])
 
         for a in audio_files:
             cmd.extend(["-i", str(a["file"])])
@@ -1364,6 +1375,34 @@ class TranscodePipeline:
             except Exception:
                 pass
             raise RuntimeError("FFmpeg mux produced an empty or missing partial file")
+
+        # Dolby Vision container signalling (best-effort — a failure leaves a
+        # valid HDR10 file, same as the RPU passthrough itself)
+        if inject_dovi:
+            if fmt != "mp4":
+                if progress_cb:
+                    progress_cb("Dolby Vision RPU is in the stream, but WebM cannot signal it — HDR10 only")
+            else:
+                dv_partial = partial.with_name(f"{output_file.stem}.dvvc.partial.mp4")
+                try:
+                    dv_cfg = inject_dolby_vision(partial, dv_partial)
+                    if dv_cfg:
+                        os.replace(str(dv_partial), str(partial))
+                        if progress_cb:
+                            progress_cb(
+                                f"Dolby Vision signalled in MP4: profile {dv_cfg['profile']} "
+                                f"level {dv_cfg['level']} compat {dv_cfg['compat_id']} (dvvC + dby1)"
+                            )
+                    elif progress_cb:
+                        progress_cb("Dolby Vision dvvC box not written (unsupported MP4 layout) — HDR10 only")
+                except Exception as e:
+                    if progress_cb:
+                        progress_cb(f"Dolby Vision dvvC injection failed: {e} — HDR10 only")
+                finally:
+                    try:
+                        dv_partial.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
         # Confirm HDR10 color signaling landed (best-effort — never blocks publish)
         probe_target = partial

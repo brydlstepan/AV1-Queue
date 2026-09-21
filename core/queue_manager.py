@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
+from core.hdr_dovi import dovi_needs_81_conversion, ffmpeg_hdr_input_args, svt_chroma_flags
 from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format
 from core.app_settings import load_settings, JOB_CONFIG_DEFAULTS
 from core.media_tagging import build_media_tag, library_output_path, refresh_media_tag_quality
@@ -1031,6 +1032,8 @@ class QueueManager:
                 # instead would re-probe forever on HDR sources that legitimately
                 # carry no MDCV (HLG, many WEB-DLs) — six deep seeks every run.
                 or not hdr_analysis.get("frame_probed")
+                # Analyses cached before chroma_location was recorded
+                or "chroma_location" not in hdr_analysis
             )
             if need_hdr:
                 hdr_analysis = self.pipeline.hdr_processor.analyze_hdr_and_dovi(
@@ -1050,7 +1053,11 @@ class QueueManager:
                     parts.append(f"{flag} {val}")
                 return " ".join(parts)
 
-            hdr_flags = " ".join(hdr_analysis.get("svt_flags", []))
+            # HDR colour flags plus the source's chroma siting (applies to SDR too,
+            # like HandBrake) — without it the AV1 sequence header says "unknown".
+            hdr_flags = " ".join(
+                [*hdr_analysis.get("svt_flags", []), *svt_chroma_flags(hdr_analysis.get("chroma_location"))]
+            )
             # Merge pipeline-owned SVT flags (lp / low-memory) over preset params.
             svt_merged = dict(cfg.get("svt_params") or {})
             settings_live = load_settings()
@@ -1203,8 +1210,8 @@ class QueueManager:
 
             hdr10plus_json_path: Optional[str] = None
 
-            # DoVi RPU passthrough — opt-in (settings.preserve_dovi_rpu, off by
-            # default). Only reachable here for P7/P8.1 sources: _dovi_skip_reason
+            # DoVi RPU passthrough — on by default (settings.preserve_dovi_rpu).
+            # Only reachable here for P7/P8.1 sources: _dovi_skip_reason
             # already sent P5/P4/unconfirmed DoVi through the skip/quarantine path
             # above, so is_dovi at this point always means a safe base layer.
             # Best-effort like HDR10+: a failure here degrades to plain HDR10
@@ -1343,6 +1350,18 @@ class QueueManager:
                     mapped = 76.0 + (max(0.0, min(100.0, p)) * 0.10)
                     set_stage_progress(mapped, stage=f"Extracting DoVi RPU ({p:.0f}%)")
 
+                # HandBrake's rule: P7 (and P8 with Blu-ray compat id 6) → RPU
+                # rewritten to profile 8.1, since the encode has no enhancement layer
+                convert_81 = dovi_needs_81_conversion(
+                    hdr_analysis.get("dovi_profile"), hdr_analysis.get("dovi_compat_id")
+                )
+                if convert_81:
+                    append_log(
+                        f"DoVi profile {hdr_analysis.get('dovi_profile')} "
+                        f"(compat {hdr_analysis.get('dovi_compat_id')}) — converting RPU to "
+                        "profile 8.1 (enhancement layer is not carried into the AV1 encode)",
+                        update_stage=False,
+                    )
                 extracted_rpu = self.pipeline.hdr_processor.extract_dovi_rpu(
                     encode_input,
                     rpu_path_tmp,
@@ -1350,6 +1369,7 @@ class QueueManager:
                     percent_cb=_dovi_pct,
                     duration_sec=duration_sec if not cfg.get("test_mode") else None,
                     cancel_event=self._cancel_event,
+                    convert_to_81=convert_81,
                 )
                 if self._cancel_event.is_set():
                     self.pipeline.kill_all_processes()
@@ -1581,6 +1601,19 @@ class QueueManager:
                 color_args = self.pipeline.hdr_processor._ffmpeg_color_args(
                     transfer_code, color_range=ff_range
                 )
+            # Container-level HDR10 static metadata (mdcv / clli) — the SVT flags
+            # only carry it in the bitstream.
+            hdr_input_args = (
+                ffmpeg_hdr_input_args(
+                    hdr_analysis.get("mastering_display"),
+                    hdr_analysis.get("content_light"),
+                )
+                if color_args
+                else []
+            )
+            # dovi_rpu_path is still set only if the RPU actually went into the
+            # encode (cleared above when autocrop's RPU correction failed).
+            inject_dovi = bool(dovi_rpu_path and hdr_analysis.get("is_dovi"))
 
             # Output naming is final at queue-add (hdr_label already mirrors encode policy).
 
@@ -1605,6 +1638,8 @@ class QueueManager:
                 container=container,
                 progress_cb=mux_cb,
                 color_args=color_args,
+                hdr_input_args=hdr_input_args,
+                inject_dovi=inject_dovi,
                 cancel_event=self._cancel_event,
             )
 

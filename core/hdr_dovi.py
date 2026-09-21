@@ -6,15 +6,16 @@ SVT-AV1-Tritium color flags.
 Policy (see README.md "HDR & Dolby Vision"): a DV source whose base layer
 stands on its own (profile 7 / 8.1, BL signal-compatibility id != 0) is always
 encoded as HDR10; a profile-5 source (compat id 0) is skipped upstream. RPU
-passthrough for those P7/P8.1 sources is opt-in (settings.preserve_dovi_rpu,
-off by default) and best-effort — same degrade-gracefully posture as HDR10+:
+passthrough for those P7/P8.1 sources is on by default (settings.preserve_dovi_rpu)
+and best-effort — same degrade-gracefully posture as HDR10+:
   - HDR10+ JSON via hdr10plus_tool (if present) → --hdr10plus-json
   - DoVi RPU via dovi_tool extract-rpu (if present and the setting is on) →
-    --dolby-vision-rpu. The raw extracted RPU is passed through unconverted:
-    dovi_tool's documented `convert` modes only retarget HEVC profiles (8.1
-    Blu-ray compat, MEL, 8.4), none of which apply to AV1/profile 10, and
-    SVT-AV1-Tritium's --dolby-vision-rpu is built on libdovi (the same
-    library dovi_tool uses) to do the AV1 packing itself.
+    --dolby-vision-rpu. Like HandBrake, a profile-7 source (or profile 8 with
+    compat id 6, the Blu-ray flavour) is extracted with `-m 2` so the RPU is
+    rewritten to profile 8.1 first: the AV1 stream has no enhancement layer,
+    so an RPU still describing residual / NLQ would be wrong. Anything else is
+    passed through unconverted. SVT-AV1-Tritium's --dolby-vision-rpu is built
+    on libdovi (the same library dovi_tool uses) to do the AV1 packing itself.
 Otherwise falls back to static HDR10 color signaling (primaries / transfer / matrix).
 """
 
@@ -143,6 +144,62 @@ def _format_mastering(side: Dict[str, Any]) -> Optional[str]:
         f"R({rx:.4f},{ry:.4f})WP({wx:.4f},{wy:.4f})"
         f"L({_fmt_nit(lmax, is_min=False)},{_fmt_nit(lmin, is_min=True)})"
     )
+
+
+def dovi_needs_81_conversion(profile: Any, compat_id: Any) -> bool:
+    """
+    Same rule as HandBrake (libhb/work.c): a profile-7 source, or profile 8 with
+    the Blu-ray flavoured compat id 6, has its RPU rewritten to profile 8.1.
+    Deliberately not "anything but 8.1": mode 2 on a compat-id-4 (HLG) profile
+    8.4 RPU would turn it into a PQ one.
+    """
+    try:
+        p, c = int(profile), int(compat_id)
+    except (TypeError, ValueError):
+        return False
+    return p == 7 or (p == 8 and c == 6)
+
+
+# ffprobe chroma_location -> SVT --chroma-sample-position. Same mapping as
+# HandBrake's encsvtav1.c. AV1 can only express these two for 4:2:0; anything
+# else (center, top, unspecified) stays "unknown" rather than guessing.
+_SVT_CHROMA_POSITION = {"left": "vertical", "topleft": "colocated"}
+
+
+def svt_chroma_flags(chroma_location: Any) -> List[str]:
+    pos = _SVT_CHROMA_POSITION.get(str(chroma_location or "").strip().lower())
+    return ["--chroma-sample-position", pos] if pos else []
+
+
+_SVT_MASTERING = re.compile(
+    r"G\(([\d.]+),([\d.]+)\)B\(([\d.]+),([\d.]+)\)R\(([\d.]+),([\d.]+)\)"
+    r"WP\(([\d.]+),([\d.]+)\)L\(([\d.]+),([\d.]+)\)"
+)
+
+
+def ffmpeg_hdr_input_args(
+    mastering: Optional[str], content_light: Optional[str]
+) -> List[str]:
+    """
+    ffmpeg *input* options that put mdcv / clli boxes in the muxed MP4 (and the
+    equivalent WebM elements). Must precede ``-i`` — ffmpeg rejects them on the
+    output side. SVT wants nits and decimal chromaticity; ffmpeg's parser wants
+    x265-style integers (chromaticity in 0.00002, luminance in 0.0001 cd/m²).
+    """
+    args: List[str] = []
+    m = _SVT_MASTERING.fullmatch(mastering or "")
+    if m:
+        v = [float(x) for x in m.groups()]
+        chroma = [round(c * 50000) for c in v[:8]]
+        lmax, lmin = round(v[8] * 10000), round(v[9] * 10000)
+        args += [
+            "-mastering_display",
+            f"G({chroma[0]},{chroma[1]})B({chroma[2]},{chroma[3]})"
+            f"R({chroma[4]},{chroma[5]})WP({chroma[6]},{chroma[7]})L({lmax},{lmin})",
+        ]
+    if content_light and re.fullmatch(r"\d+,\d+", content_light):
+        args += ["-content_light", content_light]
+    return args
 
 
 def _parse_content_light(side: Dict[str, Any]) -> Optional[str]:
@@ -347,6 +404,7 @@ class HDRDoviProcessor:
             "color_primaries": "",
             "color_transfer": "",
             "color_space": "",
+            "chroma_location": "",
             "source": "none",
         }
 
@@ -380,6 +438,7 @@ class HDRDoviProcessor:
                     "color_primaries": "",
                     "color_transfer": "arib-std-b67" if fname_hlg else "smpte2084",
                     "color_space": "",
+                    "chroma_location": "",
                     "source": "filename",
                 }
             empty["probe_failed"] = probe_failed
@@ -534,6 +593,9 @@ class HDRDoviProcessor:
             "color_transfer": color_transfer or ("smpte2084" if (is_hdr10 or is_dovi or is_hdr10plus or dovi_filename_hint or hdr10plus_filename_hint) else ""),
             "color_space": color_space,
             "color_range": ff_range,
+            # ffprobe's name for the source's 4:2:0 chroma siting; drives SVT's
+            # --chroma-sample-position (see svt_chroma_flags)
+            "chroma_location": str(video_stream.get("chroma_location") or ""),
             "source": source,
         }
 
@@ -820,14 +882,19 @@ class HDRDoviProcessor:
         trim_start: Optional[str] = None,
         trim_end: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
+        convert_to_81: bool = False,
     ) -> Optional[Path]:
         """
-        Extract a raw Dolby Vision RPU via dovi_tool (opt-in, settings.preserve_dovi_rpu).
+        Extract a Dolby Vision RPU via dovi_tool (settings.preserve_dovi_rpu).
 
         Only meaningful for P7/P8.1 sources whose base layer is already valid HDR10 —
         callers must gate this on dovi_compat_id != 0 and not profile 5, same as the
         existing "base layer stands on its own" policy. Mirrors
         extract_hdr10plus_json's demux-then-extract shape.
+
+        convert_to_81 rewrites the RPU to profile 8.1 while extracting (dovi_tool
+        ``-m 2``, applied by extract-rpu itself). Set it from
+        dovi_needs_81_conversion() — the encode has no enhancement layer.
         """
         if not self.dovi_tool.is_file():
             if progress_cb:
@@ -897,8 +964,10 @@ class HDRDoviProcessor:
                 percent_cb(92.0)
             except Exception:
                 pass
+        # -m is a global option: it must precede the subcommand
+        mode_args = ["-m", "2"] if convert_to_81 else []
         dt = subprocess.run(
-            [str(self.dovi_tool), "extract-rpu", str(extract_input), "-o", str(out_rpu)],
+            [str(self.dovi_tool), *mode_args, "extract-rpu", str(extract_input), "-o", str(out_rpu)],
             capture_output=True,
             text=True,
             encoding="utf-8",
