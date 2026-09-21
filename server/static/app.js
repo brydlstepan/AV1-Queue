@@ -741,8 +741,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const prof = Number.isFinite(profNum) ? `Profile ${profNum}` : "Profile 8";
       // Policy: P5 (base-layer compat 0) is skipped; every other profile
       // encodes as HDR10 (HDR10+ kept if present). RPU passthrough alongside
-      // that HDR10 base layer is opt-in via settings.preserve_dovi_rpu and
-      // best-effort — see README.md "HDR & Dolby Vision".
+      // that HDR10 base layer is on by default (settings.preserve_dovi_rpu)
+      // and best-effort — see README.md "HDR & Dolby Vision".
       if (compat === 0 || profNum === 5) {
         return `Dolby Vision (${prof}) — will be skipped (base layer not standalone)`;
       }

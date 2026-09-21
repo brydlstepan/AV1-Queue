@@ -30,7 +30,7 @@ Local **AV1 encoding queue** with a browser UI. Wraps [SVT-AV1-Tritium](https://
 | Video filter graph | **VapourSynth** + **FFMS2**, **vszip** (CPU metrics), **Vship** (NVIDIA GPU metrics) |
 | Mux / audio / probe | **FFmpeg** / **ffprobe** (libopus) |
 | HDR10+ passthrough | **hdr10plus_tool** (quietvoid) extracts the HDR10+ JSON; SVT-AV1-Tritium injects it via `--hdr10plus-json` (ships enabled by default in Tritium's prebuilt Windows binaries) |
-| Dolby Vision RPU passthrough | **dovi_tool** (quietvoid) extracts the raw RPU (`extract-rpu`, unconverted — dovi_tool's `convert` modes only retarget HEVC profiles and don't apply to AV1); SVT-AV1-Tritium injects it via `--dolby-vision-rpu` (uses `libdovi`, the same library dovi_tool is built on, to pack it into the AV1 bitstream). On by default — see [Settings → Preserve Dolby Vision RPU](#hdr--dolby-vision) |
+| Dolby Vision RPU passthrough | **dovi_tool** (quietvoid) extracts the RPU (`extract-rpu`; P7 / P8-compat-6 sources are rewritten to profile 8.1 with `-m 2` first, like HandBrake, everything else passes through unconverted); SVT-AV1-Tritium injects it via `--dolby-vision-rpu` (uses `libdovi`, the same library dovi_tool is built on, to pack it into the AV1 bitstream). On by default — see [Settings → Preserve Dolby Vision RPU](#hdr--dolby-vision) |
 | System metrics | **psutil** |
 
 Python packages (installed into `vs/python-env/` by setup from `requirements.txt`): `fastapi`, `uvicorn[standard]`, `websockets`, `psutil`, `vapoursynth`, `vstools`, `vsjetpack`, `rich`, `py7zr`, …
@@ -96,6 +96,7 @@ AV1-Queue/
 │   ├── pipeline.py            # Probe, audio, test segment, mux, cleanup
 │   ├── queue_manager.py       # Job lifecycle & encode orchestration
 │   ├── hdr_dovi.py            # HDR / Dolby Vision helpers
+│   ├── mp4_dovi.py            # dvvC / dby1 insert for DoVi AV1-in-MP4
 │   └── measure_ssimu2.py
 ├── server/
 │   ├── app.py                 # FastAPI routes & WebSocket
@@ -168,11 +169,18 @@ HDR10+ can be carried through but not created. It needs both a libhdr10plus-enab
 
 #### Dolby Vision RPU passthrough
 
-On by default; toggle off via **Settings → Preserve Dolby Vision RPU** if you don't want it. Needs `bin/dovi_tool.exe` (installed by `setup_env.py`, same as `hdr10plus_tool` — quietvoid's release assets) and an SVT-AV1-Tritium build with `--dolby-vision-rpu` (`enable-libdovi`, on by default in Tritium's Windows releases). The RPU is extracted with `dovi_tool extract-rpu` and passed to SVT **unconverted** — `dovi_tool`'s documented `convert` modes only retarget HEVC-specific profiles (8.1 Blu-ray compatibility, MEL, 8.4), none of which apply to AV1/profile 10, and `--dolby-vision-rpu` is built on `libdovi` (the same library `dovi_tool` uses) to do the AV1 packing itself. Never blocks a job — HDR strict mode does not apply to it, since the worst case (RPU unavailable) is identical to the feature being off.
+On by default; toggle off via **Settings → Preserve Dolby Vision RPU** if you don't want it. Needs `bin/dovi_tool.exe` (installed by `setup_env.py`, same as `hdr10plus_tool` — quietvoid's release assets) and an SVT-AV1-Tritium build with `--dolby-vision-rpu` (`enable-libdovi`, on by default in Tritium's Windows releases). The RPU is extracted with `dovi_tool extract-rpu` and handed to SVT, whose `--dolby-vision-rpu` is built on `libdovi` (the same library `dovi_tool` uses) and does the AV1 packing itself. The RPU is **rewritten to profile 8.1 first** (`dovi_tool -m 2`) when the source is profile 7, or profile 8 with Blu-ray compat id 6 — the same rule HandBrake applies. The AV1 encode carries only the base layer, so an untouched P7 RPU (which still describes an enhancement layer's residual / NLQ mapping) would describe something that isn't in the stream. Other sources (P8.1 and the like) are passed through unconverted; mode 2 is deliberately not applied to them, since on a compat-id-4 (HLG) 8.4 RPU it would turn it into a PQ one. For a P7 source the enhancement layer (FEL detail) is discarded, exactly as in HandBrake's output. Never blocks a job — HDR strict mode does not apply to it, since the worst case (RPU unavailable) is identical to the feature being off.
 
 **Autocrop interaction:** the RPU is extracted from the *uncropped* source, before autocrop runs. A DoVi RPU carries frame-geometry-dependent metadata (active area / L5-L8 trims), so injecting it unmodified alongside a frame that autocrop actually cropped would describe geometry that no longer matches the encoded picture. When autocrop detects and applies a non-zero crop on an RPU-passthrough job, `dovi_tool editor` corrects the RPU's active area first — `{"active_area": {"crop": true}}`, quietvoid's documented fix for exactly this case ("should be set to true when final video has no letterbox bars") — and the corrected RPU is what actually gets injected. If that correction step itself fails, RPU passthrough falls back to dropped/HDR10-only for that job rather than injecting something unverified. A source with no black bars needs no correction and encodes with the extracted RPU as-is.
 
-Untested claim to verify before relying on this in production: whether the resulting DoVi-tagged AV1 track actually survives an MP4 remux losslessly on this project's ffmpeg build (MKV is the more established container for DoVi+AV1 muxing). Worth a real DoVi P8.1 sample run before trusting this for a library-wide re-encode.
+**Container signalling (MP4):** the RPU in the bitstream is not enough on its own — players decide an MP4 is Dolby Vision from a `dvvC` box on the `av01` sample entry (plus the `dby1` brand), and read HDR10 static metadata from `mdcv` / `clli` boxes. ffmpeg's MP4 muxer writes none of these from a raw IVF, so the mux step adds them (compared against a HandBrake SVT-AV1 DoVi encode of the same source, which carries the identical boxes):
+
+- `mdcv` / `clli` — ffmpeg's `-mastering_display` / `-content_light` *input* options (`ffmpeg_hdr_input_args` in `core/hdr_dovi.py`). Applies to every HDR job, WebM included.
+- `dvvC` + `dby1` — inserted after the mux by `core/mp4_dovi.py` (ffmpeg has no CLI option for a DoVi config record). Written as profile 10, compat id 1 (HDR10 base layer), RPU + base layer present; level derived the way HandBrake does (lowest DV level covering the pixel rate, width, and the AV1 level's bitrate cap). Only when the RPU actually went into the encode; a failure or an unsupported MP4 layout leaves the plain HDR10 file, with a log line. WebM cannot signal DoVi.
+
+Verified on a DoVi P8 (compat id 6) source: the muxed MP4's video/audio packets are byte-identical before and after the box insert, and the DoVi record, `mdcv` and `clli` match HandBrake's output. The P7 → 8.1 conversion was checked on a synthesized profile-7 (MEL) RPU injected into that source's HEVC: without `-m 2` the extracted RPU stays profile 7 with residual/NLQ enabled; with it the result is byte-identical to the true 8.1 RPU. No real dual-layer P7 disc rip has been run through the full pipeline.
+
+**Chroma siting:** the source's 4:2:0 chroma location is passed as SVT `--chroma-sample-position` (`left` → `vertical`, `topleft` → `colocated`, the same mapping HandBrake uses), so the AV1 sequence header matches the source instead of saying "unknown". Applies to SDR and HDR alike; other locations stay unknown.
 
 #### Sourcing guidance
 
