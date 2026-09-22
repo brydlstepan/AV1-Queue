@@ -19,6 +19,9 @@ Env vars (see README "Network access"):
                    is always included too, unless a wildcard address is
                    already present (which already covers loopback, and
                    binding both would just double-bind the same traffic).
+  AV1QUEUE_USERNAME / AV1QUEUE_PASSWORD — see BasicAuthMiddleware in
+                   server/app.py; unrelated to binding, checked at request
+                   time. Only referenced here to shape the startup log line.
 """
 
 from __future__ import annotations
@@ -82,9 +85,11 @@ def main() -> None:
 
     print(f"[av1queue] Listening on: {', '.join(f'{h}:{port}' for h in hosts)}")
     if any(h not in ("127.0.0.1", "::1") for h in hosts):
+        auth_on = bool(os.environ.get("AV1QUEUE_USERNAME") and os.environ.get("AV1QUEUE_PASSWORD"))
         print(
-            "[av1queue] Reachable from other machines — there is no login on this "
-            "server; see README 'Network access'."
+            "[av1queue] Reachable from other machines"
+            + ("" if auth_on else " with NO LOGIN configured (AV1QUEUE_USERNAME/AV1QUEUE_PASSWORD unset)")
+            + " — see README 'Network access'."
         )
 
     config = uvicorn.Config("server.app:app", log_level="info")
