@@ -57,7 +57,11 @@ echo  Setup finished successfully
 echo ============================================================
 echo.
 echo  Next step: double-click  runGUI.bat
-echo  Studio opens at http://localhost:8765  ^(tray icon in the system tray^)
+if defined AV1QUEUE_PORT (
+  echo  Studio opens at http://localhost:%AV1QUEUE_PORT%  ^(tray icon in the system tray^)
+) else (
+  echo  Studio opens at http://localhost:8765  ^(tray icon in the system tray^)
+)
 echo.
 pause
 endlocal
