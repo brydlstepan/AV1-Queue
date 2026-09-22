@@ -70,7 +70,7 @@ This runs `scripts/setup_env.py`, which downloads missing binaries and VapourSyn
 runGUI.bat
 ```
 
-Starts the server as a background process with a **system tray icon** — no console window, not shown on the taskbar. Right-click the tray icon for Open Studio / Start Queue / Pause/Resume Queue / View Log / Stop Server. On first launch it opens **http://localhost:8765** in your browser automatically; if the server is already running, it just reuses it. Binds to **127.0.0.1** only. Server output goes to `logs/server.log`.
+Starts the server as a background process with a **system tray icon** — no console window, not shown on the taskbar. Right-click the tray icon for Open Studio / Start Queue / Pause/Resume Queue / View Log / **Open Live Log Console** / Stop Server. On first launch it opens **http://localhost:8765** in your browser automatically; if the server is already running, it just reuses it. Binds to **127.0.0.1** only. Server output goes to `logs/server.log`; **View Log** opens a static snapshot in Notepad, **Open Live Log Console** opens a console window that tails it in real time.
 
 **Port:** set the `AV1QUEUE_PORT` environment variable before launching to use a port other than 8765 (e.g. `set AV1QUEUE_PORT=9000 && runGUI.bat`, or add that `set` to a desktop shortcut's Target). Applies to both `runGUI.bat` and `scripts\start_queue.ps1`. An unset or invalid value falls back to 8765. Stop any instance already running on the old port first — the tray launcher only recognizes a server on the port it's currently configured for.
 
