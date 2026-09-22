@@ -3,6 +3,8 @@ AV1 Queue - FastAPI & WebSocket Server
 Provides local REST API and real-time WebSocket progress stream for the Queue GUI.
 """
 
+import base64
+import secrets
 import sys
 import os
 import re
@@ -66,7 +68,75 @@ async def lifespan(app: FastAPI):
         _watch_service = None
 
 
+class BasicAuthMiddleware:
+    """
+    Optional HTTP Basic Auth, gated by AV1QUEUE_USERNAME / AV1QUEUE_PASSWORD.
+
+    Off entirely (zero behavior change) unless both env vars are set — the
+    default loopback-only deployment has never needed this. Loopback requests
+    are always exempt: the tray launcher and the local browser tab have no way
+    to supply credentials, and 127.0.0.1 already means "this machine". This
+    only gates the surface AV1QUEUE_HOST opens up (see README "Network access").
+
+    Pure ASGI (not Starlette's BaseHTTPMiddleware) so it can also gate the
+    /ws/live websocket handshake, not just HTTP routes.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.username = os.environ.get("AV1QUEUE_USERNAME", "")
+        self.password = os.environ.get("AV1QUEUE_PASSWORD", "")
+        self.enabled = bool(self.username and self.password)
+
+    async def __call__(self, scope, receive, send):
+        if not self.enabled or scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        client_host = client[0] if client else None
+        if client_host in ("127.0.0.1", "::1"):
+            await self.app(scope, receive, send)
+            return
+
+        if self._authorized(scope):
+            await self.app(scope, receive, send)
+            return
+
+        if scope["type"] == "websocket":
+            # Refuse before accept() — no handshake response body to send.
+            await send({"type": "websocket.close", "code": 1008})
+            return
+
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"www-authenticate", b'Basic realm="AV1 Queue"'),
+                (b"content-type", b"text/plain"),
+            ],
+        })
+        await send({"type": "http.response.body", "body": b"Unauthorized"})
+
+    def _authorized(self, scope) -> bool:
+        headers = dict(scope.get("headers") or [])
+        auth = headers.get(b"authorization", b"")
+        try:
+            auth = auth.decode("latin-1")
+        except Exception:
+            return False
+        if not auth.startswith("Basic "):
+            return False
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+        except Exception:
+            return False
+        user, _, pw = decoded.partition(":")
+        return secrets.compare_digest(user, self.username) and secrets.compare_digest(pw, self.password)
+
+
 app = FastAPI(title="AV1 Queue", lifespan=lifespan)
+app.add_middleware(BasicAuthMiddleware)
 queue_mgr = QueueManager()
 
 

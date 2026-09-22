@@ -43,12 +43,18 @@ $StudioUrl = "http://127.0.0.1:$StudioPort"
 # so binding just a Tailscale IP gives you Tailscale + localhost WITHOUT
 # exposing the LAN — the actual bind happens in core/run_server.py (uvicorn's
 # own --host only takes one address, which can't express that combination).
-# Unset = loopback only, unchanged from before this existed. There is no
-# login on this server — only do this on a network you trust.
+# Unset = loopback only, unchanged from before this existed.
+#
+# There is NO AUTHENTICATION unless you also set AV1QUEUE_USERNAME /
+# AV1QUEUE_PASSWORD (HTTP Basic Auth, skipped for loopback requests). Widening
+# the host without credentials means anything that can reach it has full
+# control (queue, settings, stored API keys). Only do this on a network you
+# trust — a Tailscale tailnet is a reasonable case.
 $extraHosts = @()
 if ($env:AV1QUEUE_HOST) {
     $extraHosts = $env:AV1QUEUE_HOST -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 }
+$authConfigured = [bool]($env:AV1QUEUE_USERNAME -and $env:AV1QUEUE_PASSWORD)
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Set-Location $RootDir
@@ -299,11 +305,9 @@ $stopItem.add_Click({
 
 if ($extraHosts.Count -gt 0) {
     $hostList = $extraHosts -join ", "
-    $trayIcon.ShowBalloonTip(
-        6000, "AV1 Queue",
-        "Also bound to $($hostList):$StudioPort — reachable from other machines. There is no login; only run this on a network you trust.",
-        [System.Windows.Forms.ToolTipIcon]::Warning
-    )
+    $balloonMsg = "Also bound to $($hostList):$StudioPort — reachable from other machines."
+    $balloonMsg += if ($authConfigured) { " Login is required for non-local connections." } else { " NO LOGIN is configured; only run this on a network you trust." }
+    $trayIcon.ShowBalloonTip(6000, "AV1 Queue", $balloonMsg, [System.Windows.Forms.ToolTipIcon]::Warning)
 } else {
     $trayIcon.ShowBalloonTip(3000, "AV1 Queue", "Running in the tray. Right-click for options.", [System.Windows.Forms.ToolTipIcon]::Info)
 }

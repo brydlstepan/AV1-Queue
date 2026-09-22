@@ -30,12 +30,22 @@ if ($env:AV1QUEUE_PORT) {
 # so binding just a Tailscale IP gives you Tailscale + localhost WITHOUT
 # exposing the LAN — the actual bind happens in core/run_server.py (uvicorn's
 # own --host only takes one address, which can't express that combination).
-# Unset = loopback only, unchanged from before this existed. There is no
-# login on this server — only do this on a network you trust.
+# Unset = loopback only, unchanged from before this existed.
+#
+# There is NO AUTHENTICATION unless you also set AV1QUEUE_USERNAME /
+# AV1QUEUE_PASSWORD (HTTP Basic Auth, skipped for loopback requests). Widening
+# the host without credentials means anything that can reach it has full
+# control (queue, settings, stored API keys). Only do this on a network you
+# trust — a Tailscale tailnet is a reasonable case.
 $extraHosts = @()
 if ($env:AV1QUEUE_HOST) {
     $extraHosts = $env:AV1QUEUE_HOST -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-    Write-Host "[!] AV1QUEUE_HOST='$($env:AV1QUEUE_HOST)' — server will also accept connections from other machines. There is no login on this server; only do this on a network you trust." -ForegroundColor Yellow
+    $authSet = [bool]($env:AV1QUEUE_USERNAME -and $env:AV1QUEUE_PASSWORD)
+    $warn = "[!] AV1QUEUE_HOST='$($env:AV1QUEUE_HOST)' — server will also accept connections from other machines."
+    if (-not $authSet) {
+        $warn += " NO LOGIN is configured (set AV1QUEUE_USERNAME / AV1QUEUE_PASSWORD to add one) — only do this on a network you trust."
+    }
+    Write-Host $warn -ForegroundColor Yellow
 }
 
 if (-not (Test-Path $PythonExe)) {
