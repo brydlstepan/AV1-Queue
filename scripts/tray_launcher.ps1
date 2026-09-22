@@ -31,7 +31,24 @@ if ($env:AV1QUEUE_PORT) {
         ) | Out-Null
     }
 }
+# Local tray control (health check, Open Studio, queue actions) always talks
+# to loopback — it works regardless of bind host, and is simpler than trying
+# to reach a wildcard/VPN address from the same machine.
 $StudioUrl = "http://127.0.0.1:$StudioPort"
+
+# Bind-host override: set $env:AV1QUEUE_HOST to reach the server from outside
+# this machine — a specific interface IP (e.g. your Tailscale 100.x.x.x
+# address; comma-separate more than one) or 0.0.0.0 for every interface
+# (LAN included). Loopback (127.0.0.1) is always bound too, on top of this,
+# so binding just a Tailscale IP gives you Tailscale + localhost WITHOUT
+# exposing the LAN — the actual bind happens in core/run_server.py (uvicorn's
+# own --host only takes one address, which can't express that combination).
+# Unset = loopback only, unchanged from before this existed. There is no
+# login on this server — only do this on a network you trust.
+$extraHosts = @()
+if ($env:AV1QUEUE_HOST) {
+    $extraHosts = $env:AV1QUEUE_HOST -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+}
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Set-Location $RootDir
@@ -126,7 +143,7 @@ function Invoke-QueueAction([string]$Action) {
 
 function Open-Studio { Start-Process $StudioUrl }
 
-# Serialize start/attach so two quick runGUI.bat clicks cannot spawn two uvicorns.
+# Serialize start/attach so two quick runGUI.bat clicks cannot spawn two servers.
 $startMutex = New-Object System.Threading.Mutex($false, "Local\AV1QueueServerStart_$StudioPort")
 $mutexHeld = $false
 try {
@@ -152,7 +169,7 @@ try {
             $serverProc = Resolve-ServerProcess
         } else {
             $serverProc = Start-Process -FilePath $PythonExe `
-                -ArgumentList "-m", "uvicorn", "server.app:app", "--host", "127.0.0.1", "--port", "$StudioPort", "--log-level", "info" `
+                -ArgumentList "`"$RootDir\core\run_server.py`"" `
                 -WorkingDirectory $RootDir `
                 -WindowStyle Hidden `
                 -RedirectStandardOutput $LogFile `
@@ -280,7 +297,16 @@ $stopItem.add_Click({
     [System.Windows.Forms.Application]::Exit()
 })
 
-$trayIcon.ShowBalloonTip(3000, "AV1 Queue", "Running in the tray. Right-click for options.", [System.Windows.Forms.ToolTipIcon]::Info)
+if ($extraHosts.Count -gt 0) {
+    $hostList = $extraHosts -join ", "
+    $trayIcon.ShowBalloonTip(
+        6000, "AV1 Queue",
+        "Also bound to $($hostList):$StudioPort — reachable from other machines. There is no login; only run this on a network you trust.",
+        [System.Windows.Forms.ToolTipIcon]::Warning
+    )
+} else {
+    $trayIcon.ShowBalloonTip(3000, "AV1 Queue", "Running in the tray. Right-click for options.", [System.Windows.Forms.ToolTipIcon]::Info)
+}
 
 if ($freshStart -and (Test-ServerHealthy)) {
     Open-Studio
