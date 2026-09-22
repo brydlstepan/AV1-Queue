@@ -72,6 +72,8 @@ runGUI.bat
 
 Starts the server as a background process with a **system tray icon** — no console window, not shown on the taskbar. Right-click the tray icon for Open Studio / Start Queue / Pause/Resume Queue / View Log / Stop Server. On first launch it opens **http://localhost:8765** in your browser automatically; if the server is already running, it just reuses it. Binds to **127.0.0.1** only. Server output goes to `logs/server.log`.
 
+**Port:** set the `AV1QUEUE_PORT` environment variable before launching to use a port other than 8765 (e.g. `set AV1QUEUE_PORT=9000 && runGUI.bat`, or add that `set` to a desktop shortcut's Target). Applies to both `runGUI.bat` and `scripts\start_queue.ps1`. An unset or invalid value falls back to 8765. Stop any instance already running on the old port first — the tray launcher only recognizes a server on the port it's currently configured for.
+
 Or run it in the foreground with a visible console (for debugging — live log output, Ctrl+C to stop):
 
 ```powershell
@@ -217,7 +219,7 @@ Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8
 
 ## Development
 
-Server entrypoint (as used by the launchers): `uvicorn server.app:app --host 127.0.0.1 --port 8765` (see `scripts/start_queue.ps1` for PATH/`PYTHONPATH`). Localhost only by default.
+Server entrypoint (as used by the launchers): `uvicorn server.app:app --host 127.0.0.1 --port 8765` (see `scripts/start_queue.ps1` for PATH/`PYTHONPATH`). Localhost only by default. Port is overridable via `AV1QUEUE_PORT` (see [Launch the studio](#2-launch-the-studio)).
 
 Useful API surface (non-exhaustive): `/api/queue`, `/api/queue/add`, `/api/queue/update`, `/api/queue/requeue`, `/api/presets`, `/api/probe`, `/api/system`, `/api/history`, WebSocket `/ws/live`.
 

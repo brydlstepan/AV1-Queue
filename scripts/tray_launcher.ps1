@@ -15,8 +15,23 @@ $LogDir = "$RootDir\logs"
 $LogFile = "$LogDir\server.log"
 $ErrLogFile = "$LogDir\server.err.log"
 $PidFile = "$LogDir\server.pid"
-$StudioUrl = "http://127.0.0.1:8765"
+
+# Port override: set $env:AV1QUEUE_PORT before launching runGUI.bat (or edit a
+# shortcut's "Target" to prefix `set AV1QUEUE_PORT=9000 && `). Falls back to
+# 8765 on anything unset or out of range.
 $StudioPort = 8765
+if ($env:AV1QUEUE_PORT) {
+    $parsedPort = 0
+    if ([int]::TryParse($env:AV1QUEUE_PORT, [ref]$parsedPort) -and $parsedPort -gt 0 -and $parsedPort -le 65535) {
+        $StudioPort = $parsedPort
+    } else {
+        [System.Windows.Forms.MessageBox]::Show(
+            "AV1QUEUE_PORT='$($env:AV1QUEUE_PORT)' is not a valid port (1-65535). Using $StudioPort instead.",
+            "AV1 Queue", "OK", "Warning"
+        ) | Out-Null
+    }
+}
+$StudioUrl = "http://127.0.0.1:$StudioPort"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Set-Location $RootDir
@@ -112,7 +127,7 @@ function Invoke-QueueAction([string]$Action) {
 function Open-Studio { Start-Process $StudioUrl }
 
 # Serialize start/attach so two quick runGUI.bat clicks cannot spawn two uvicorns.
-$startMutex = New-Object System.Threading.Mutex($false, "Local\AV1QueueServerStart")
+$startMutex = New-Object System.Threading.Mutex($false, "Local\AV1QueueServerStart_$StudioPort")
 $mutexHeld = $false
 try {
     $mutexHeld = $startMutex.WaitOne(30000)
@@ -137,7 +152,7 @@ try {
             $serverProc = Resolve-ServerProcess
         } else {
             $serverProc = Start-Process -FilePath $PythonExe `
-                -ArgumentList "-m", "uvicorn", "server.app:app", "--host", "127.0.0.1", "--port", "8765", "--log-level", "info" `
+                -ArgumentList "-m", "uvicorn", "server.app:app", "--host", "127.0.0.1", "--port", "$StudioPort", "--log-level", "info" `
                 -WorkingDirectory $RootDir `
                 -WindowStyle Hidden `
                 -RedirectStandardOutput $LogFile `
@@ -182,7 +197,7 @@ try {
 $icon = [System.Drawing.SystemIcons]::Application
 $trayIcon = New-Object System.Windows.Forms.NotifyIcon
 $trayIcon.Icon = $icon
-$trayIcon.Text = "AV1 Queue"
+$trayIcon.Text = if ($StudioPort -eq 8765) { "AV1 Queue" } else { "AV1 Queue ($StudioPort)" }
 $trayIcon.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
