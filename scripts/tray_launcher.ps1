@@ -2,7 +2,8 @@
 .SYNOPSIS
     Runs AV1 Queue as a background process with a system tray icon —
     no console window, not shown on the taskbar. Right-click the tray icon to
-    open the studio, start/pause/resume the queue, view the log, or stop the server.
+    open the studio, start/pause/resume the queue, view or live-tail the log,
+    or stop the server.
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -149,6 +150,18 @@ function Invoke-QueueAction([string]$Action) {
 
 function Open-Studio { Start-Process $StudioUrl }
 
+function Open-LiveConsole {
+    # A separate console window tailing the live server output — the
+    # "View Log" item below opens a static snapshot in Notepad instead.
+    if (-not (Test-Path $LogFile)) {
+        New-Item -ItemType File -Path $LogFile -Force | Out-Null
+    }
+    $tailCmd = "`$Host.UI.RawUI.WindowTitle = 'AV1 Queue - Live Log'; " +
+        "Write-Host 'Tailing $LogFile (Ctrl+C to close). Errors go to $ErrLogFile.' -ForegroundColor Cyan; " +
+        "Get-Content -Path '$LogFile' -Wait -Tail 200"
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-NoProfile", "-Command", $tailCmd
+}
+
 # Serialize start/attach so two quick runGUI.bat clicks cannot spawn two servers.
 $startMutex = New-Object System.Threading.Mutex($false, "Local\AV1QueueServerStart_$StudioPort")
 $mutexHeld = $false
@@ -228,6 +241,7 @@ $openItem = $menu.Items.Add("Open Studio")
 $startItem = $menu.Items.Add("Start Queue")
 $pauseItem = $menu.Items.Add("Pause Queue")
 $logItem = $menu.Items.Add("View Log")
+$consoleItem = $menu.Items.Add("Open Live Log Console")
 $menu.Items.Add("-") | Out-Null
 $stopItem = $menu.Items.Add("Stop Server && Exit")
 $trayIcon.ContextMenuStrip = $menu
@@ -292,6 +306,7 @@ $pauseItem.add_Click({
     }
 })
 $logItem.add_Click({ Start-Process notepad.exe $LogFile })
+$consoleItem.add_Click({ Open-LiveConsole })
 
 $stopItem.add_Click({
     if (-not $serverProc -or $serverProc.HasExited) {
