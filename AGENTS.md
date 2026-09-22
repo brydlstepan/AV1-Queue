@@ -80,7 +80,7 @@ runGUI.bat                   # Background tray process (127.0.0.1:8765)
 .\scripts\start_queue.ps1    # Foreground server (debug)
 ```
 
-Server (as launchers run it): `uvicorn server.app:app --host 127.0.0.1 --port 8765` (see `start_queue.ps1` for PATH / `PYTHONPATH`). Port is overridable via `$env:AV1QUEUE_PORT` (both launchers), default 8765.
+Server (as launchers run it): `core/run_server.py` (thin uvicorn wrapper, binds loopback + any `$env:AV1QUEUE_HOST` addresses as real sockets — see its docstring). Port/host are overridable via `$env:AV1QUEUE_PORT` / `$env:AV1QUEUE_HOST` (both launchers), defaulting to 8765 / `127.0.0.1`. The server has no auth — widening the host is a real exposure, not just a convenience flag.
 
 Useful API: `/api/queue`, `/api/queue/add`, `/api/queue/update`, `/api/queue/requeue`, `/api/presets`, `/api/probe`, `/api/system`, `/api/history`, WS `/ws/live`.
 

@@ -74,6 +74,8 @@ Starts the server as a background process with a **system tray icon** — no con
 
 **Port:** set the `AV1QUEUE_PORT` environment variable before launching to use a port other than 8765 (e.g. `set AV1QUEUE_PORT=9000 && runGUI.bat`, or add that `set` to a desktop shortcut's Target). Applies to both `runGUI.bat` and `scripts\start_queue.ps1`. An unset or invalid value falls back to 8765. Stop any instance already running on the old port first — the tray launcher only recognizes a server on the port it's currently configured for.
 
+**Network access (Tailscale / LAN):** the server binds to `127.0.0.1` only by default, so it's unreachable from another machine (including over Tailscale) no matter the port — loopback never accepts remote connections. Set `AV1QUEUE_HOST` to widen that, e.g. `set AV1QUEUE_HOST=0.0.0.0 && runGUI.bat` (all interfaces) or a specific interface IP such as your Tailscale address (`100.x.x.x`, from `tailscale ip -4`). Loopback stays bound too, on top of whatever you add — so setting just your Tailscale IP gives you Tailscale + localhost **without** exposing the LAN (uvicorn's own `--host` flag can't express that combination, which is why `core/run_server.py` opens the sockets itself instead). **There is no login on this server** — anything that can reach the bound address gets full control: adding/cancelling jobs, changing settings, reading stored TMDB/OpenSubtitles API keys. Only do this on a network you trust; a Tailscale tailnet (which gates reachability by your own ACLs) is a reasonable case, the open internet is not. The tray's local controls (health check, Open Studio, Start/Pause Queue) always use `127.0.0.1` regardless of this setting, since loopback keeps working once the server is listening.
+
 Or run it in the foreground with a visible console (for debugging — live log output, Ctrl+C to stop):
 
 ```powershell
@@ -219,7 +221,7 @@ Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8
 
 ## Development
 
-Server entrypoint (as used by the launchers): `uvicorn server.app:app --host 127.0.0.1 --port 8765` (see `scripts/start_queue.ps1` for PATH/`PYTHONPATH`). Localhost only by default. Port is overridable via `AV1QUEUE_PORT` (see [Launch the studio](#2-launch-the-studio)).
+Server entrypoint (as used by the launchers): `core/run_server.py` (a thin uvicorn wrapper — see its docstring for why it opens sockets itself instead of using uvicorn's `--host`/`--port` CLI flags directly). Localhost only by default. Port and bind host are overridable via `AV1QUEUE_PORT` / `AV1QUEUE_HOST` (see [Launch the studio](#2-launch-the-studio) — no authentication, widen the host only on a trusted network).
 
 Useful API surface (non-exhaustive): `/api/queue`, `/api/queue/add`, `/api/queue/update`, `/api/queue/requeue`, `/api/presets`, `/api/probe`, `/api/system`, `/api/history`, WebSocket `/ws/live`.
 

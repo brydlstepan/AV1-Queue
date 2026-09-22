@@ -23,6 +23,21 @@ if ($env:AV1QUEUE_PORT) {
     }
 }
 
+# Bind-host override: set $env:AV1QUEUE_HOST to reach the server from outside
+# this machine — a specific interface IP (e.g. your Tailscale 100.x.x.x
+# address; comma-separate more than one) or 0.0.0.0 for every interface
+# (LAN included). Loopback (127.0.0.1) is always bound too, on top of this,
+# so binding just a Tailscale IP gives you Tailscale + localhost WITHOUT
+# exposing the LAN — the actual bind happens in core/run_server.py (uvicorn's
+# own --host only takes one address, which can't express that combination).
+# Unset = loopback only, unchanged from before this existed. There is no
+# login on this server — only do this on a network you trust.
+$extraHosts = @()
+if ($env:AV1QUEUE_HOST) {
+    $extraHosts = $env:AV1QUEUE_HOST -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    Write-Host "[!] AV1QUEUE_HOST='$($env:AV1QUEUE_HOST)' — server will also accept connections from other machines. There is no login on this server; only do this on a network you trust." -ForegroundColor Yellow
+}
+
 if (-not (Test-Path $PythonExe)) {
     Write-Host "[!] Virtual environment not found. Running setup first..." -ForegroundColor Yellow
     & "$ScriptDir\setup.ps1"
@@ -46,15 +61,20 @@ $env:PYTHONUTF8 = "1"
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "   STARTING AV1 QUEUE STUDIO" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
+# Loopback always works locally regardless of AV1QUEUE_HOST, so the local
+# link stays 127.0.0.1 even when also bound to a Tailscale/LAN interface.
 $studioUrl = "http://127.0.0.1:$Port"
 $esc = [char]27
 Write-Host "URL: " -NoNewline -ForegroundColor Green
 Write-Host ($esc + "]8;;" + $studioUrl + $esc + "\" + $studioUrl + $esc + "]8;;" + $esc + "\") -ForegroundColor Cyan
 Write-Host "Ctrl+click the link, or copy: $studioUrl" -ForegroundColor DarkGray
+foreach ($h in $extraHosts) {
+    Write-Host "Also bound to: http://$($h):$Port (reachable from other machines)" -ForegroundColor DarkGray
+}
 Write-Host "Press Ctrl+C in this terminal to stop the server.`n" -ForegroundColor DarkGray
 
 try {
-    & $PythonExe -m uvicorn server.app:app --host 127.0.0.1 --port $Port --log-level info
+    & $PythonExe "$RootDir\core\run_server.py"
     $code = $LASTEXITCODE
 } catch {
     Write-Host "[!] Failed to start server: $_" -ForegroundColor Red
@@ -62,7 +82,7 @@ try {
 }
 
 if ($code -ne 0) {
-    Write-Host "`n[!] Uvicorn exited with code $code" -ForegroundColor Red
+    Write-Host "`n[!] Server exited with code $code" -ForegroundColor Red
     Write-Host "Press Enter to close..." -ForegroundColor Yellow
     [void][System.Console]::ReadLine()
     exit $code
