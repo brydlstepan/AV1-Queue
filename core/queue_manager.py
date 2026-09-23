@@ -1296,27 +1296,48 @@ class QueueManager:
                     update_stage=False
                 )
 
-            # HDR10+ metadata from the same file we will encode (segment or full)
+            # HDR10+ JSON and DoVi RPU from the same file we will encode (segment
+            # or full), both pulled from one streamed read of its video track
             meta_inject: List[str] = []
-            if want_hdr10plus:
-                json_path = encode_temp_dir / "hdr10plus.json"
-                set_stage_progress(56.0, stage="Extracting HDR10+ metadata")
+            extracted: Optional[Path] = None
+            extracted_rpu: Optional[Path] = None
+            if want_hdr10plus or want_dovi_rpu:
+                # HandBrake's rule: P7 (and P8 with Blu-ray compat id 6) → RPU
+                # rewritten to profile 8.1, since the encode has no enhancement layer
+                convert_81 = want_dovi_rpu and dovi_needs_81_conversion(
+                    hdr_analysis.get("dovi_profile"), hdr_analysis.get("dovi_compat_id")
+                )
+                if convert_81:
+                    append_log(
+                        f"DoVi profile {hdr_analysis.get('dovi_profile')} "
+                        f"(compat {hdr_analysis.get('dovi_compat_id')}) — converting RPU to "
+                        "profile 8.1 (enhancement layer is not carried into the AV1 encode)",
+                        update_stage=False,
+                    )
+                meta_label = " + ".join(
+                    name for name, on in (("HDR10+", want_hdr10plus), ("DoVi RPU", want_dovi_rpu)) if on
+                )
+                set_stage_progress(56.0, stage=f"Extracting {meta_label}")
 
-                def _hdr10p_pct(p: float):
-                    mapped = 56.0 + (max(0.0, min(100.0, p)) * 0.20)
-                    set_stage_progress(mapped, stage=f"Extracting HDR10+ ({p:.0f}%)")
+                def _meta_pct(p: float):
+                    mapped = 56.0 + (max(0.0, min(100.0, p)) * 0.30)
+                    set_stage_progress(mapped, stage=f"Extracting {meta_label} ({p:.0f}%)")
 
-                extracted = self.pipeline.hdr_processor.extract_hdr10plus_json(
+                extracted, extracted_rpu = self.pipeline.hdr_processor.extract_hdr_metadata(
                     encode_input,
-                    json_path,
+                    hdr10plus_json=encode_temp_dir / "hdr10plus.json" if want_hdr10plus else None,
+                    dovi_rpu=encode_temp_dir / "dovi_rpu.bin" if want_dovi_rpu else None,
+                    convert_to_81=convert_81,
                     progress_cb=lambda m: append_log(m, update_stage=False),
-                    percent_cb=_hdr10p_pct,
+                    percent_cb=_meta_pct,
                     duration_sec=duration_sec if not cfg.get("test_mode") else None,
                     cancel_event=self._cancel_event,
                 )
                 if self._cancel_event.is_set():
                     self.pipeline.kill_all_processes()
                     raise RuntimeError("Job cancelled.")
+
+            if want_hdr10plus:
                 json_problem = (
                     "HDR10+ extract produced nothing"
                     if not extracted
@@ -1340,40 +1361,9 @@ class QueueManager:
                         update_stage=False,
                     )
 
-            # DoVi RPU from the same file we will encode (segment or full). Best-effort:
-            # any failure just logs and falls back to plain HDR10, never raises.
+            # DoVi RPU is best-effort: any failure just logs and falls back to
+            # plain HDR10, never raises.
             if want_dovi_rpu:
-                rpu_path_tmp = encode_temp_dir / "dovi_rpu.bin"
-                set_stage_progress(76.0, stage="Extracting Dolby Vision RPU")
-
-                def _dovi_pct(p: float):
-                    mapped = 76.0 + (max(0.0, min(100.0, p)) * 0.10)
-                    set_stage_progress(mapped, stage=f"Extracting DoVi RPU ({p:.0f}%)")
-
-                # HandBrake's rule: P7 (and P8 with Blu-ray compat id 6) → RPU
-                # rewritten to profile 8.1, since the encode has no enhancement layer
-                convert_81 = dovi_needs_81_conversion(
-                    hdr_analysis.get("dovi_profile"), hdr_analysis.get("dovi_compat_id")
-                )
-                if convert_81:
-                    append_log(
-                        f"DoVi profile {hdr_analysis.get('dovi_profile')} "
-                        f"(compat {hdr_analysis.get('dovi_compat_id')}) — converting RPU to "
-                        "profile 8.1 (enhancement layer is not carried into the AV1 encode)",
-                        update_stage=False,
-                    )
-                extracted_rpu = self.pipeline.hdr_processor.extract_dovi_rpu(
-                    encode_input,
-                    rpu_path_tmp,
-                    progress_cb=lambda m: append_log(m, update_stage=False),
-                    percent_cb=_dovi_pct,
-                    duration_sec=duration_sec if not cfg.get("test_mode") else None,
-                    cancel_event=self._cancel_event,
-                    convert_to_81=convert_81,
-                )
-                if self._cancel_event.is_set():
-                    self.pipeline.kill_all_processes()
-                    raise RuntimeError("Job cancelled.")
                 rpu_problem = (
                     "DoVi RPU extract produced nothing"
                     if not extracted_rpu
