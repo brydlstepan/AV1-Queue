@@ -20,10 +20,12 @@ Otherwise falls back to static HDR10 color signaling (primaries / transfer / mat
 """
 
 import json
+import queue
 import re
 import subprocess
 import threading
 import time
+from collections import deque
 from fractions import Fraction
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Tuple
@@ -56,6 +58,10 @@ def _parse_timecode(val: Any) -> Optional[float]:
     except ValueError:
         return None
     return None
+
+# One `key=value` line of ffmpeg -progress output (errors never match: they
+# carry spaces or a `[demuxer @ …]` prefix)
+_PROGRESS_LINE = re.compile(r"^[a-z0-9_]+=\S*$")
 
 _FILENAME_DOVI = re.compile(
     r"(?:^|[.\-_\[\(])(?:dv|dovi|dolby[\.\-_]?vision)(?:$|[.\-_\]\)])",
@@ -599,10 +605,10 @@ class HDRDoviProcessor:
             "source": source,
         }
 
-    def _ffmpeg_extract_hevc_annexb(
+    def _pipe_hevc_to_tools(
         self,
         source_file: Path,
-        hevc_path: Path,
+        consumers: List[Tuple[str, List[str]]],
         *,
         log: Callable[[str], None],
         percent_cb: Optional[Callable[[float], None]] = None,
@@ -610,21 +616,24 @@ class HDRDoviProcessor:
         trim_start: Optional[str] = None,
         trim_end: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
-        label: str = "HEVC",
         map_spec: str = "0:v:0",
-    ) -> bool:
-        """Demux video to annex-B HEVC with live ffmpeg -progress (updates percent_cb 0–100)."""
-        hevc_path = Path(hevc_path)
-        if hevc_path.exists():
-            try:
-                hevc_path.unlink()
-            except Exception:
-                pass
+    ) -> Optional[Dict[str, Tuple[int, str]]]:
+        """
+        Demux video to annex-B HEVC on ffmpeg's stdout and stream it into each
+        consumer's stdin (hdr10plus_tool / dovi_tool read ``-``). The source is
+        read once and nothing is written to disk — demuxing to a temp .hevc
+        first copied the whole video track into _temp (often another drive)
+        and then read it back, once per tool.
 
+        One consumer gets ffmpeg's stdout handle directly; several are fed by a
+        pump thread so they parse in parallel. percent_cb gets 0–90 from ffmpeg
+        -progress while streaming, then 100 once every tool has exited. Returns {label: (returncode, output tail)} with ffmpeg's own
+        result under "ffmpeg", or None when cancelled or a process won't start.
+        """
         cmd: List[str] = [
-            str(self.ffmpeg), "-y", "-hide_banner", "-nostdin",
+            str(self.ffmpeg), "-hide_banner", "-nostdin", "-nostats",
             "-loglevel", "error", "-stats_period", "0.5",
-            "-progress", "pipe:1",
+            "-progress", "pipe:2",
         ]
         t0 = _parse_timecode(trim_start)
         t1 = _parse_timecode(trim_end)
@@ -639,7 +648,7 @@ class HDRDoviProcessor:
         cmd.extend([
             "-map", str(map_spec or "0:v:0"), "-c", "copy",
             "-bsf:v", "hevc_mp4toannexb",
-            "-f", "hevc", str(hevc_path),
+            "-f", "hevc", "-",
         ])
 
         span = duration_sec
@@ -648,23 +657,110 @@ class HDRDoviProcessor:
         elif t0 is not None and span is not None and span > t0:
             span = span - t0
 
+        procs: List[subprocess.Popen] = []
+
+        def kill_all():
+            for p in procs:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
+            ff = subprocess.Popen(
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
         except Exception as e:
-            log(f"{label} extract spawn failed: {e}")
-            return False
+            log(f"HEVC demux spawn failed: {e}")
+            return None
+        procs.append(ff)
+
+        single = len(consumers) == 1
+        tools: List[Tuple[str, subprocess.Popen]] = []
+        for label, tool_cmd in consumers:
+            try:
+                p = subprocess.Popen(
+                    tool_cmd,
+                    stdin=ff.stdout if single else subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+            except Exception as e:
+                kill_all()
+                log(f"{label} extract spawn failed: {e}")
+                return None
+            procs.append(p)
+            tools.append((label, p))
+        if single:
+            # The tool owns the read end now; ffmpeg sees EOF/EPIPE if it exits
+            ff.stdout.close()
+
+        done = threading.Event()
+
+        def watch_cancel():
+            # Separate from the stderr loop: a blocked pipe can stall ffmpeg's
+            # progress output, and cancel must still kill everything promptly.
+            while not done.wait(0.25):
+                if cancel_event is not None and cancel_event.is_set():
+                    kill_all()
+                    return
+
+        tails: Dict[str, str] = {}
+
+        def drain(label: str, stream):
+            tail: deque = deque(maxlen=40)
+            for raw in iter(stream.readline, b""):
+                tail.append(raw.decode("utf-8", "replace").rstrip())
+            tails[label] = "\n".join(tail)
+
+        threads = [threading.Thread(target=watch_cancel, daemon=True)]
+        threads += [
+            threading.Thread(target=drain, args=(label, p.stdout), daemon=True)
+            for label, p in tools
+        ]
+
+        if not single:
+            queues = [queue.Queue(maxsize=8) for _ in tools]
+
+            def pump():
+                while True:
+                    chunk = ff.stdout.read(1 << 20)
+                    if not chunk:
+                        break
+                    for q in queues:
+                        q.put(chunk)
+                for q in queues:
+                    q.put(None)
+
+            def feed(p: subprocess.Popen, q: queue.Queue):
+                alive = True
+                while True:
+                    chunk = q.get()
+                    if chunk is None:
+                        break
+                    if alive:
+                        try:
+                            p.stdin.write(chunk)
+                        except OSError:
+                            # Tool exited early; keep draining so the other
+                            # consumers aren't starved. Its rc/tail say why.
+                            alive = False
+                try:
+                    p.stdin.close()
+                except OSError:
+                    pass
+
+            threads.append(threading.Thread(target=pump, daemon=True))
+            threads += [
+                threading.Thread(target=feed, args=(p, q), daemon=True)
+                for (_, p), q in zip(tools, queues)
+            ]
+
+        for t in threads:
+            t.start()
 
         last_pct = -1.0
         last_emit = 0.0
-        out_time_sec = 0.0
 
         def emit_pct(raw: float, force: bool = False):
             nonlocal last_pct, last_emit
@@ -682,61 +778,43 @@ class HDRDoviProcessor:
                 pass
 
         emit_pct(0.0, force=True)
-        assert proc.stdout is not None
+        err_tail: deque = deque(maxlen=20)
         try:
-            while True:
-                if cancel_event is not None and cancel_event.is_set():
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=3)
-                    except Exception:
-                        pass
-                    log(f"{label} extract cancelled")
-                    return False
-                line = proc.stdout.readline()
-                if not line:
-                    if proc.poll() is not None:
-                        break
-                    time.sleep(0.05)
+            for raw in iter(ff.stderr.readline, b""):
+                line = raw.decode("utf-8", "replace").strip()
+                if not _PROGRESS_LINE.match(line):
+                    if line:
+                        err_tail.append(line)
                     continue
-                line = line.strip()
-                if line.startswith("out_time_ms="):
+                key, _, val = line.partition("=")
+                if key == "out_time_ms":
                     try:
-                        out_time_sec = int(line.split("=", 1)[1]) / 1_000_000.0
+                        sec = int(val) / 1_000_000.0
                     except ValueError:
-                        pass
+                        continue
+                    # Stream = 0–90%: the tools still post-process every
+                    # frame's metadata after ffmpeg hits EOF
                     if span and span > 0:
-                        emit_pct(100.0 * out_time_sec / span)
-                elif line.startswith("out_time="):
-                    # fallback HH:MM:SS.micro
-                    tc = _parse_timecode(line.split("=", 1)[1])
-                    if tc is not None:
-                        out_time_sec = tc
-                        if span and span > 0:
-                            emit_pct(100.0 * out_time_sec / span)
-                elif line == "progress=end":
-                    emit_pct(100.0, force=True)
-            proc.wait(timeout=30)
-        except Exception as e:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            log(f"{label} extract failed: {e}")
-            return False
+                        emit_pct(90.0 * sec / span)
+            ff.wait()
+            emit_pct(90.0, force=True)
+            for t in threads[1:]:
+                t.join()
+            for _, p in tools:
+                p.wait()
+        finally:
+            done.set()
 
-        err = ""
-        try:
-            if proc.stderr:
-                err = proc.stderr.read() or ""
-        except Exception:
-            pass
+        if cancel_event is not None and cancel_event.is_set():
+            kill_all()
+            log("HDR metadata extract cancelled")
+            return None
 
-        if proc.returncode != 0 or not hevc_path.is_file() or hevc_path.stat().st_size < 64:
-            log(f"{label} extract failed: {err[-400:] if err else f'exit {proc.returncode}'}")
-            return False
         emit_pct(100.0, force=True)
-        return True
+        results: Dict[str, Tuple[int, str]] = {"ffmpeg": (ff.returncode, "\n".join(err_tail))}
+        for label, p in tools:
+            results[label] = (p.returncode, tails.get(label, ""))
+        return results
 
     @staticmethod
     def verify_hdr10plus_json(json_path: Path) -> Optional[str]:
@@ -753,115 +831,6 @@ class HDRDoviProcessor:
             return "HDR10+ JSON contains no SceneInfo entries"
         return None
 
-    def extract_hdr10plus_json(
-        self,
-        source_file: Path,
-        out_json: Path,
-        progress_cb: Optional[Callable[[str], None]] = None,
-        percent_cb: Optional[Callable[[float], None]] = None,
-        duration_sec: Optional[float] = None,
-        trim_start: Optional[str] = None,
-        trim_end: Optional[str] = None,
-        cancel_event: Optional[threading.Event] = None,
-    ) -> Optional[Path]:
-        """
-        Extract HDR10+ JSON via hdr10plus_tool (required).
-
-        Prefer the tool's native MKV/HEVC readers; only demux with ffmpeg when
-        the container isn't something hdr10plus_tool accepts directly.
-        """
-        if not self.hdr10plus_tool.is_file():
-            if progress_cb:
-                progress_cb(
-                    "hdr10plus_tool.exe missing from bin/ — run setup to install "
-                    "(quietvoid/hdr10plus_tool). HDR10+ JSON inject skipped."
-                )
-            return None
-        if not self.ffmpeg.is_file():
-            return None
-
-        source_file = Path(source_file)
-        out_json = Path(out_json)
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        hevc_path: Optional[Path] = None
-        extract_input = source_file
-
-        def log(msg: str):
-            if progress_cb:
-                progress_cb(msg)
-
-        suffix = source_file.suffix.lower()
-        # hdr10plus_tool reads HEVC annex-B and Matroska natively
-        native_ok = suffix in (".mkv", ".hevc", ".h265", ".bin")
-        # Trimmed ranges / non-MKV containers still need a demuxed annex-B span
-        need_demux = (not native_ok) or (trim_start is not None or trim_end is not None)
-
-        if need_demux:
-            hevc_path = out_json.with_suffix(".hevc")
-
-            def map_hevc_pct(p: float):
-                if percent_cb:
-                    percent_cb(max(0.0, min(90.0, p * 0.90)))
-
-            log("Extracting HEVC bitstream for HDR10+…")
-            ok = self._ffmpeg_extract_hevc_annexb(
-                source_file,
-                hevc_path,
-                log=log,
-                percent_cb=map_hevc_pct,
-                duration_sec=duration_sec,
-                trim_start=trim_start,
-                trim_end=trim_end,
-                cancel_event=cancel_event,
-                label="HEVC",
-            )
-            if not ok:
-                return None
-            extract_input = hevc_path
-        else:
-            if percent_cb:
-                try:
-                    percent_cb(50.0)
-                except Exception:
-                    pass
-
-        if cancel_event is not None and cancel_event.is_set():
-            if hevc_path:
-                try:
-                    hevc_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return None
-
-        log("Extracting HDR10+ JSON (hdr10plus_tool)…")
-        if percent_cb:
-            try:
-                percent_cb(92.0)
-            except Exception:
-                pass
-        ht = subprocess.run(
-            [str(self.hdr10plus_tool), "extract", str(extract_input), "-o", str(out_json)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if hevc_path:
-            try:
-                hevc_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        if ht.returncode != 0 or not out_json.is_file() or out_json.stat().st_size < 8:
-            log(f"hdr10plus_tool extract failed: {(ht.stderr or ht.stdout or '')[-400:]}")
-            return None
-        if percent_cb:
-            try:
-                percent_cb(100.0)
-            except Exception:
-                pass
-        log(f"HDR10+ JSON ready ({out_json.name}, {out_json.stat().st_size} bytes)")
-        return out_json
-
     @staticmethod
     def verify_dovi_rpu(rpu_path: Path) -> Optional[str]:
         """Validate an extracted DoVi RPU. Returns None when usable, else a reason."""
@@ -872,122 +841,109 @@ class HDRDoviProcessor:
             return "DoVi RPU file is implausibly small"
         return None
 
-    def extract_dovi_rpu(
+    def extract_hdr_metadata(
         self,
         source_file: Path,
-        out_rpu: Path,
+        *,
+        hdr10plus_json: Optional[Path] = None,
+        dovi_rpu: Optional[Path] = None,
+        convert_to_81: bool = False,
         progress_cb: Optional[Callable[[str], None]] = None,
         percent_cb: Optional[Callable[[float], None]] = None,
         duration_sec: Optional[float] = None,
         trim_start: Optional[str] = None,
         trim_end: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
-        convert_to_81: bool = False,
-    ) -> Optional[Path]:
+    ) -> Tuple[Optional[Path], Optional[Path]]:
         """
-        Extract a Dolby Vision RPU via dovi_tool (settings.preserve_dovi_rpu).
+        Extract HDR10+ JSON (hdr10plus_tool) and/or a Dolby Vision RPU
+        (dovi_tool) from a single streamed read of the source's video track.
+        Pass an output path for each one wanted.
 
-        Only meaningful for P7/P8.1 sources whose base layer is already valid HDR10 —
-        callers must gate this on dovi_compat_id != 0 and not profile 5, same as the
-        existing "base layer stands on its own" policy. Mirrors
-        extract_hdr10plus_json's demux-then-extract shape.
+        The RPU (settings.preserve_dovi_rpu) is only meaningful for P7/P8.1
+        sources whose base layer is already valid HDR10 — callers must gate it
+        on dovi_compat_id != 0 and not profile 5, same as the existing "base
+        layer stands on its own" policy.
 
         convert_to_81 rewrites the RPU to profile 8.1 while extracting (dovi_tool
         ``-m 2``, applied by extract-rpu itself). Set it from
         dovi_needs_81_conversion() — the encode has no enhancement layer.
+
+        Returns (hdr10plus_json, dovi_rpu); each is None when not requested or
+        not produced (a missing tool or failed extract is logged, never raised).
         """
-        if not self.dovi_tool.is_file():
-            if progress_cb:
-                progress_cb(
-                    "dovi_tool.exe missing from bin/ — run setup to install "
-                    "(quietvoid/dovi_tool). DoVi RPU passthrough skipped."
-                )
-            return None
-        if not self.ffmpeg.is_file():
-            return None
-
-        source_file = Path(source_file)
-        out_rpu = Path(out_rpu)
-        out_rpu.parent.mkdir(parents=True, exist_ok=True)
-        hevc_path: Optional[Path] = None
-        extract_input = source_file
-
         def log(msg: str):
             if progress_cb:
                 progress_cb(msg)
 
-        suffix = source_file.suffix.lower()
-        # dovi_tool reads HEVC annex-B and Matroska natively
-        native_ok = suffix in (".mkv", ".hevc", ".h265", ".bin")
-        need_demux = (not native_ok) or (trim_start is not None or trim_end is not None)
+        consumers: List[Tuple[str, List[str]]] = []
+        outputs: Dict[str, Tuple[Path, int]] = {}
 
-        if need_demux:
-            hevc_path = out_rpu.with_suffix(".hevc")
-
-            def map_hevc_pct(p: float):
-                if percent_cb:
-                    percent_cb(max(0.0, min(90.0, p * 0.90)))
-
-            log("Extracting HEVC bitstream for Dolby Vision RPU…")
-            ok = self._ffmpeg_extract_hevc_annexb(
-                source_file,
-                hevc_path,
-                log=log,
-                percent_cb=map_hevc_pct,
-                duration_sec=duration_sec,
-                trim_start=trim_start,
-                trim_end=trim_end,
-                cancel_event=cancel_event,
-                label="HEVC",
-            )
-            if not ok:
-                return None
-            extract_input = hevc_path
-        else:
-            if percent_cb:
-                try:
-                    percent_cb(50.0)
-                except Exception:
-                    pass
-
-        if cancel_event is not None and cancel_event.is_set():
-            if hevc_path:
-                try:
-                    hevc_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return None
-
-        log("Extracting Dolby Vision RPU (dovi_tool)…")
-        if percent_cb:
+        def add(label: str, out: Path, min_size: int, cmd: List[str]):
+            out.parent.mkdir(parents=True, exist_ok=True)
             try:
-                percent_cb(92.0)
+                out.unlink(missing_ok=True)
             except Exception:
                 pass
-        # -m is a global option: it must precede the subcommand
-        mode_args = ["-m", "2"] if convert_to_81 else []
-        dt = subprocess.run(
-            [str(self.dovi_tool), *mode_args, "extract-rpu", str(extract_input), "-o", str(out_rpu)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            consumers.append((label, cmd))
+            outputs[label] = (out, min_size)
+
+        if hdr10plus_json is not None:
+            if not self.hdr10plus_tool.is_file():
+                log(
+                    "hdr10plus_tool.exe missing from bin/ — run setup to install "
+                    "(quietvoid/hdr10plus_tool). HDR10+ JSON inject skipped."
+                )
+            else:
+                out = Path(hdr10plus_json)
+                add("HDR10+ JSON", out, 8,
+                    [str(self.hdr10plus_tool), "extract", "-", "-o", str(out)])
+        if dovi_rpu is not None:
+            if not self.dovi_tool.is_file():
+                log(
+                    "dovi_tool.exe missing from bin/ — run setup to install "
+                    "(quietvoid/dovi_tool). DoVi RPU passthrough skipped."
+                )
+            else:
+                out = Path(dovi_rpu)
+                # -m is a global option: it must precede the subcommand
+                mode_args = ["-m", "2"] if convert_to_81 else []
+                add("Dolby Vision RPU", out, 64,
+                    [str(self.dovi_tool), *mode_args, "extract-rpu", "-", "-o", str(out)])
+
+        if not consumers or not self.ffmpeg.is_file():
+            return None, None
+
+        log(f"Extracting {' + '.join(outputs)} (streamed from source)…")
+        results = self._pipe_hevc_to_tools(
+            Path(source_file),
+            consumers,
+            log=log,
+            percent_cb=percent_cb,
+            duration_sec=duration_sec,
+            trim_start=trim_start,
+            trim_end=trim_end,
+            cancel_event=cancel_event,
         )
-        if hevc_path:
-            try:
-                hevc_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        if dt.returncode != 0 or not out_rpu.is_file() or out_rpu.stat().st_size < 64:
-            log(f"dovi_tool extract-rpu failed: {(dt.stderr or dt.stdout or '')[-400:]}")
-            return None
-        if percent_cb:
-            try:
-                percent_cb(100.0)
-            except Exception:
-                pass
-        log(f"Dolby Vision RPU ready ({out_rpu.name}, {out_rpu.stat().st_size} bytes)")
-        return out_rpu
+        if results is None:
+            return None, None
+
+        ff_rc, ff_err = results["ffmpeg"]
+        produced: Dict[str, Optional[Path]] = {}
+        for label, (out, min_size) in outputs.items():
+            rc, tail = results[label]
+            produced[label] = None
+            # A tool failing first also breaks ffmpeg's pipe — report the tool
+            if rc != 0:
+                log(f"{label} extract failed: {tail[-400:] or f'exit {rc}'}")
+            elif ff_rc != 0:
+                log(f"{label} extract failed: HEVC demux error: {ff_err[-400:] or f'exit {ff_rc}'}")
+            elif not out.is_file() or out.stat().st_size < min_size:
+                log(f"{label} extract failed: output missing or too small. {tail[-400:]}".rstrip())
+            else:
+                log(f"{label} ready ({out.name}, {out.stat().st_size} bytes)")
+                produced[label] = out
+        return produced.get("HDR10+ JSON"), produced.get("Dolby Vision RPU")
 
     def apply_dovi_crop_edit(
         self,
@@ -1007,7 +963,7 @@ class HDRDoviProcessor:
         (docs/editor.md, assets/editor_examples/crop.json). No "mode" key is
         set — that field retargets HEVC-specific profiles (8.1 Blu-ray compat,
         MEL, 8.4) and doesn't apply to our AV1/profile-10 RPU, same reasoning
-        as extract_dovi_rpu passing the RPU through unconverted.
+        as extract_hdr_metadata passing a non-P7 RPU through unconverted.
         """
         if not self.dovi_tool.is_file():
             return None
