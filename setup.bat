@@ -57,6 +57,11 @@ echo  Setup finished successfully
 echo ============================================================
 echo.
 echo  Next step: double-click  runGUI.bat
+if not defined AV1QUEUE_PORT if exist "%~dp0.env" (
+  for /f "usebackq tokens=1,* delims==" %%A in ("%~dp0.env") do (
+    if /i "%%A"=="AV1QUEUE_PORT" set "AV1QUEUE_PORT=%%B"
+  )
+)
 if defined AV1QUEUE_PORT (
   echo  Studio opens at http://localhost:%AV1QUEUE_PORT%  ^(tray icon in the system tray^)
 ) else (

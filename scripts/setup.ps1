@@ -101,6 +101,8 @@ Write-Host "Launch the studio:" -ForegroundColor Green
 Write-Host "  Double-click  runGUI.bat" -ForegroundColor Yellow
 Write-Host "  (or: .\scripts\start_queue.ps1 for a visible debug console)"
 Write-Host ""
+. "$PSScriptRoot\load_env.ps1"
+$null = Import-DotEnv "$PSScriptRoot\..\.env"
 $setupPort = if ($env:AV1QUEUE_PORT) { $env:AV1QUEUE_PORT } else { "8765" }
 Write-Host "Studio URL: http://localhost:$setupPort"
 Write-Host ""

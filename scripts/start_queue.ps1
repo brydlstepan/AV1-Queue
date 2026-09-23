@@ -10,9 +10,15 @@ $PythonExe = "$RootDir\vs\python-env\Scripts\python.exe"
 
 Set-Location $RootDir
 
-# Port override: set $env:AV1QUEUE_PORT before launching (or edit runGUI.bat /
-# a shortcut's "Target" to prefix `set AV1QUEUE_PORT=9000 && `). Falls back to
-# 8765 on anything unset or out of range.
+# Settings below can live in the project-root .env (see .env.example); the
+# server inherits them. Real environment variables take precedence.
+. "$ScriptDir\load_env.ps1"
+foreach ($w in (Import-DotEnv "$RootDir\.env")) {
+    Write-Host "[!] $w" -ForegroundColor Yellow
+}
+
+# Port override: set AV1QUEUE_PORT in .env, or $env:AV1QUEUE_PORT before
+# launching. Falls back to 8765 on anything unset or out of range.
 $Port = 8765
 if ($env:AV1QUEUE_PORT) {
     $parsedPort = 0

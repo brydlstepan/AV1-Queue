@@ -17,9 +17,20 @@ $LogFile = "$LogDir\server.log"
 $ErrLogFile = "$LogDir\server.err.log"
 $PidFile = "$LogDir\server.pid"
 
-# Port override: set $env:AV1QUEUE_PORT before launching runGUI.bat (or edit a
-# shortcut's "Target" to prefix `set AV1QUEUE_PORT=9000 && `). Falls back to
-# 8765 on anything unset or out of range.
+# Settings below can live in the project-root .env (see .env.example); the
+# spawned server inherits them. Real environment variables take precedence.
+. "$ScriptDir\load_env.ps1"
+$envWarnings = Import-DotEnv "$RootDir\.env"
+if ($envWarnings.Count -gt 0) {
+    [System.Windows.Forms.MessageBox]::Show(
+        ($envWarnings -join "`n"), "AV1 Queue", "OK", "Warning"
+    ) | Out-Null
+}
+
+# Port override: set AV1QUEUE_PORT in .env, or in the environment before
+# launching runGUI.bat (e.g. a shortcut's "Target" prefixed with
+# `set AV1QUEUE_PORT=9000 && `). Falls back to 8765 on anything unset or out
+# of range.
 $StudioPort = 8765
 if ($env:AV1QUEUE_PORT) {
     $parsedPort = 0
