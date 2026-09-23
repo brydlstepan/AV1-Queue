@@ -320,7 +320,7 @@ $stopItem.add_Click({
 
 if ($extraHosts.Count -gt 0) {
     $hostList = $extraHosts -join ", "
-    $balloonMsg = "Also bound to $($hostList):$StudioPort — reachable from other machines."
+    $balloonMsg = "Also bound to $($hostList):$StudioPort - reachable from other machines."
     $balloonMsg += if ($authConfigured) { " Login is required for non-local connections." } else { " NO LOGIN is configured; only run this on a network you trust." }
     $trayIcon.ShowBalloonTip(6000, "AV1 Queue", $balloonMsg, [System.Windows.Forms.ToolTipIcon]::Warning)
 } else {

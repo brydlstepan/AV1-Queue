@@ -19,7 +19,7 @@ if ($env:AV1QUEUE_PORT) {
     if ([int]::TryParse($env:AV1QUEUE_PORT, [ref]$parsedPort) -and $parsedPort -gt 0 -and $parsedPort -le 65535) {
         $Port = $parsedPort
     } else {
-        Write-Host "[!] AV1QUEUE_PORT='$($env:AV1QUEUE_PORT)' is not a valid port (1-65535) — using $Port" -ForegroundColor Yellow
+        Write-Host "[!] AV1QUEUE_PORT='$($env:AV1QUEUE_PORT)' is not a valid port (1-65535) - using $Port" -ForegroundColor Yellow
     }
 }
 
@@ -41,9 +41,9 @@ $extraHosts = @()
 if ($env:AV1QUEUE_HOST) {
     $extraHosts = $env:AV1QUEUE_HOST -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     $authSet = [bool]($env:AV1QUEUE_USERNAME -and $env:AV1QUEUE_PASSWORD)
-    $warn = "[!] AV1QUEUE_HOST='$($env:AV1QUEUE_HOST)' — server will also accept connections from other machines."
+    $warn = "[!] AV1QUEUE_HOST='$($env:AV1QUEUE_HOST)' - server will also accept connections from other machines."
     if (-not $authSet) {
-        $warn += " NO LOGIN is configured (set AV1QUEUE_USERNAME / AV1QUEUE_PASSWORD to add one) — only do this on a network you trust."
+        $warn += " NO LOGIN is configured (set AV1QUEUE_USERNAME / AV1QUEUE_PASSWORD to add one) - only do this on a network you trust."
     }
     Write-Host $warn -ForegroundColor Yellow
 }
