@@ -29,8 +29,8 @@ def _ensure_settings_path() -> Path:
 
 _DEFAULTS: Dict[str, Any] = {
     "autoname_output": True,
-    "name_template_movie": "[name] ([year]) [imdbid-[imdbid]] - [[quality]]",
-    "name_template_episode": "[show] - S[season]E[episode] - [epname] - [[quality]]",
+    "name_template_movie": "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]",
+    "name_template_episode": "[show] - S[season]E[episode] - [epname] - [[resolution]]",
     "svt_lp": 0,
     "svt_low_memory": False,
     "ssimu2_target": 80.0,
@@ -112,6 +112,11 @@ def load_settings() -> Dict[str, Any]:
                 data.update({k: raw[k] for k in _DEFAULTS if k in raw})
         except Exception:
             pass
+    # [quality] was renamed [resolution] (same value); show saved templates with
+    # the new token. [quality] still renders, for jobs queued before the rename.
+    for k in ("name_template_movie", "name_template_episode"):
+        if isinstance(data.get(k), str):
+            data[k] = data[k].replace("[quality]", "[resolution]")
 
     with _cache_lock:
         globals()["_cache"] = dict(data)

@@ -293,7 +293,7 @@
                   <span class="setting-label-text">Resolution Target</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">Downscale before encode if the source is larger. Source keeps the original height. Also used for the [2160p]/ quality tag in library filenames.</span>
+                    <span class="setting-help-tip" role="tooltip">Downscale before encode if the source is larger. Source keeps the original height. Also the [resolution] naming token in library filenames (e.g. [2160p]).</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default basic-reset" data-target="pEditResolution" title="Reset to default (source)" aria-label="Reset to default">↺</button>
@@ -893,13 +893,13 @@ Default: PSNR</span>
                     <span class="setting-label-text">Movie filename template</span>
                     <span class="setting-help" tabindex="0" aria-label="Help">
                       <span class="setting-help-icon">?</span>
-                      <span class="setting-help-tip" role="tooltip">Tokens: [name] [year] [imdbid] [quality] [width] [height] [resolution] [hdr] [original]. Extension (mp4/webm) is appended automatically. Example: [name] ([year]) [imdbid-[imdbid]] - [[quality]]</span>
+                      <span class="setting-help-tip" role="tooltip">Tokens: [name] [year] [imdbid] [resolution] [hdr] [width] [height] [original]. [resolution] is the output resolution (e.g. 2160p). [hdr] is the HDR format the encode carries: DoVi, HDR10plus, DoVi HDR10plus, HLG or HDR10, empty for SDR; it's corrected after the encode to what the output actually has. Extension (mp4/webm) is appended automatically. Example with HDR: [name] ([year]) [imdbid-[imdbid]] - [[resolution] [hdr]]</span>
                     </span>
                   </label>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateMovie" title="Reset to default template" aria-label="Reset to default">↺</button>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="globalNameTemplateMovie" class="form-input pipeline-field" data-default="[name] ([year]) [imdbid-[imdbid]] - [[quality]]" spellcheck="false">
+                  <input type="text" id="globalNameTemplateMovie" class="form-input pipeline-field" data-default="[name] ([year]) [imdbid-[imdbid]] - [[resolution]]" spellcheck="false">
                 </div>
               </div>
               <div class="setting-row setting-row--stack" data-pipeline-key="nameTemplateEpisode">
@@ -914,13 +914,12 @@ Default: PSNR</span>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateEpisode" title="Reset to default template" aria-label="Reset to default">↺</button>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="globalNameTemplateEpisode" class="form-input pipeline-field" data-default="[show] - S[season]E[episode] - [epname] - [[quality]]" spellcheck="false">
+                  <input type="text" id="globalNameTemplateEpisode" class="form-input pipeline-field" data-default="[show] - S[season]E[episode] - [epname] - [[resolution]]" spellcheck="false">
                 </div>
               </div>
               <p class="pipeline-settings-note naming-tokens-note">
-                Tokens: <code>[name]</code> <code>[year]</code> <code>[imdbid]</code> <code>[quality]</code>
-                <code>[width]</code> <code>[height]</code> <code>[resolution]</code> <code>[hdr]</code>
-                <code>[original]</code>
+                Tokens: <code>[name]</code> <code>[year]</code> <code>[imdbid]</code> <code>[resolution]</code>
+                <code>[hdr]</code> <code>[width]</code> <code>[height]</code> <code>[original]</code>
                 · episodes also: <code>[show]</code> <code>[epname]</code> <code>[season]</code> <code>[episode]</code> <code>[sxxexx]</code>
                 · extension (mp4/webm) is appended automatically
               </p>

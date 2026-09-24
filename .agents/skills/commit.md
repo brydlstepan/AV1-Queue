@@ -66,11 +66,11 @@ Present **two copy-paste blocks** for Git GUI users:
 
 ```
 Commit message:
-[fix]: name DoVi outputs as HDR10
+[fix]: keep full frame on mixed-aspect titles
 
 Description:
-Name outputs from encode policy (HDR10 / HDR10plus) at
-queue-add time so the inspector matches what SVT emits.
+Autocrop runs in HandBrake's conservative mode over 30
+previews so IMAX sections aren't cropped away.
 
 Co-authored-by: (Composer)
 ```
@@ -94,11 +94,11 @@ Co-authored-by: (Composer)
 **Encode / core:**
 ```
 Commit message:
-[fix]: map DoVi sources to HDR10 filenames
+[feat]: add [hdr] naming token
 
 Description:
-hdr_label maps discarded RPU sources to HDR10 (or HDR10plus
-when that layer is kept) so queue names match encode policy.
+Name the HDR format the output actually carries and correct
+it after the encode from the output check.
 
 Co-authored-by: (Composer)
 ```

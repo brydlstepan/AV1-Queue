@@ -4,8 +4,8 @@ Parse scene / release filenames and build library-style output names.
 Input (typical):
   Dune.2021.2160p.BluRay.REMUX.HEVC.DV.DTS-HD.MA.TrueHD.7.1.Atmos-TNT.mkv
 
-Output:
-  Dune (2021) [imdbid-tt1160419] - [2160p HDR10].mp4
+Output (default template; add [hdr] for e.g. "[2160p DoVi]"):
+  Dune (2021) [imdbid-tt1160419] - [2160p].mp4
 """
 
 from __future__ import annotations
@@ -294,28 +294,50 @@ def resolution_label(width: Optional[int], height: Optional[int]) -> str:
     return ""
 
 
-def hdr_label(hdr_info: Optional[Dict[str, Any]]) -> str:
+def hdr_label(hdr_info: Optional[Dict[str, Any]], preserve_dovi: bool = True) -> str:
     """
-    Filename HDR tag for the *encoded output*. "" for SDR (no tag written).
+    Filename HDR tag for the *encoded output*: "DoVi", "HDR10plus",
+    "DoVi HDR10plus", "HLG", "HDR10", or "" for SDR.
 
-    DoVi sources are always tagged by their HDR10 base layer here (P5/P4
-    sources are skipped upstream and never reach this). This holds even when
-    settings.preserve_dovi_rpu is on and RPU passthrough succeeds, since the
-    passthrough is best-effort and this label is filename-stable regardless of
-    whether that succeeded for a given run — see README.md "HDR & Dolby
-    Vision". HDR10plus when that layer is kept; dual-layer DoVi+HDR10+ →
-    "HDR10plus" too.
+    At queue time hdr_info is the source probe, so this is the expected
+    output: DoVi only when the RPU will be carried (preserve_dovi, i.e.
+    settings.preserve_dovi_rpu), otherwise its HDR10 base layer. P5/P4
+    sources are skipped upstream and never reach this. After the encode the
+    queue re-labels from the output check (output_hdr_label), so a DoVi RPU
+    that didn't make it into the file is never named DoVi.
     """
     info = hdr_info or {}
-    if info.get("is_dovi"):
-        if info.get("is_hdr10plus"):
-            return "HDR10plus"
-        return "HDR10"
-    if info.get("is_hdr10plus"):
+    dovi = bool(info.get("is_dovi")) and preserve_dovi
+    hdr10plus = bool(info.get("is_hdr10plus"))
+    if dovi and hdr10plus:
+        return "DoVi HDR10plus"
+    if dovi:
+        return "DoVi"
+    if hdr10plus:
         return "HDR10plus"
+    if info.get("is_hlg"):
+        return "HLG"
     if info.get("is_hdr"):
         return "HDR10"
     return ""
+
+
+def output_hdr_label(source_info: Optional[Dict[str, Any]], output_info: Optional[Dict[str, Any]]) -> str:
+    """
+    HDR tag for a finished encode from its output check. DoVi and the HDR /
+    HLG signalling come from the output itself; HDR10+ can't be read back from
+    AV1 here, so it's taken from the source (HandBrake passes it through).
+    """
+    src = source_info or {}
+    out = output_info or {}
+    if not out.get("is_hdr"):
+        return ""
+    return hdr_label({
+        "is_dovi": out.get("is_dovi"),
+        "is_hdr10plus": src.get("is_hdr10plus") or out.get("is_hdr10plus"),
+        "is_hlg": out.get("is_hlg"),
+        "is_hdr": True,
+    })
 
 
 def resolution_from_target(
@@ -343,26 +365,38 @@ def resolution_from_target(
     return str((hints or {}).get("resolution") or "")
 
 
-def quality_tag(
+def quality_parts(
     video: Optional[Dict[str, Any]],
     hdr_info: Optional[Dict[str, Any]],
     hints: Optional[Dict[str, Any]] = None,
     resolution_target: Optional[str] = None,
-) -> str:
-    """Resolution from preset target; HDR from probe. Filename hints only fill SDR gaps."""
+    *,
+    preserve_dovi: bool = True,
+    hdr_override: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    (resolution, HDR tag) for naming. Resolution from the preset target; HDR
+    from the probe (or hdr_override — the output check's label after encode).
+    Filename hints only fill SDR gaps.
+    """
     hints = hints or {}
     res = resolution_from_target(resolution_target, video, hints)
-    hdr = hdr_label(hdr_info)
+    if hdr_override is not None:
+        return res, hdr_override
+    hdr = hdr_label(hdr_info, preserve_dovi=preserve_dovi)
     hint_hdr = str(hints.get("hdr") or "")
     # never let a filename "DoVi"/"HDR10plus" claim override a probe that
     # found no such layer (would misname encodes without an RPU / HDR10+ layer).
-    # hdr_label returns "" for SDR, so this only ever fills a genuine gap.
-    # Filename DoVi hints map to HDR10 — the filename tag always names the base
-    # layer, even when DoVi RPU passthrough is on (see hdr_label above).
+    # hdr_label returns "" for SDR, so this only ever fills a genuine gap; an
+    # unconfirmed filename DoVi hint names only the base layer (HDR10).
     if not hdr and hint_hdr:
         hdr = "HDR10" if hint_hdr == "DoVi" else hint_hdr
-    parts = [p for p in (res, hdr) if p]
-    return " ".join(parts) if parts else "AV1"
+    return res, hdr
+
+
+def quality_tag(res: str) -> str:
+    """The resolution label for names ([resolution]; [quality] is its legacy alias). HDR is [hdr]."""
+    return res or "AV1"
 
 
 def title_to_dots(title: str) -> str:
@@ -372,8 +406,8 @@ def title_to_dots(title: str) -> str:
 
 
 
-DEFAULT_MOVIE_TEMPLATE = "[name] ([year]) [imdbid-[imdbid]] - [[quality]]"
-DEFAULT_EPISODE_TEMPLATE = "[show] - S[season]E[episode] - [epname] - [[quality]]"
+DEFAULT_MOVIE_TEMPLATE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]"
+DEFAULT_EPISODE_TEMPLATE = "[show] - S[season]E[episode] - [epname] - [[resolution]]"
 
 _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -397,6 +431,7 @@ def _template_values(
     year: Optional[int] = None,
     imdb_id: Optional[str] = None,
     quality: str = "",
+    hdr: str = "",
     ext: str = "mp4",
     width: Optional[int] = None,
     height: Optional[int] = None,
@@ -407,12 +442,7 @@ def _template_values(
     episode: Optional[int] = None,
 ) -> Dict[str, str]:
     q = (quality or "").strip()
-    res = ""
-    hdr = ""
-    if q:
-        parts = q.split(None, 1)
-        res = parts[0] if parts else ""
-        hdr = parts[1] if len(parts) > 1 else ""
+    res = q if q and q != "AV1" else ""
     iid = ""
     if imdb_id:
         iid = str(imdb_id).lower()
@@ -429,11 +459,11 @@ def _template_values(
         "year": str(int(year)) if year else "",
         "imdbid": iid,
         "imdb": iid,
-        "quality": _sanitize_filename_part(q),
+        "quality": _sanitize_filename_part(q),  # legacy alias of [resolution]
         "width": str(int(width)) if width else "",
         "height": str(int(height)) if height else "",
         "resolution": res,
-        "hdr": hdr,
+        "hdr": _sanitize_filename_part(hdr),
         "ext": (ext or "mp4").lstrip("."),
         "original": _sanitize_filename_part(original) or name,
         "show": show_s,
@@ -466,6 +496,8 @@ def apply_name_template(template: str, values: Dict[str, str]) -> str:
     out = token_re.sub(_sub, out)
     out = re.sub(r"\(\s*\)", "", out)
     out = re.sub(r"\[\s*\]", "", out)
+    out = re.sub(r"\[\s+", "[", out)  # "[[resolution] [hdr]]" for SDR → "[2160p]"
+    out = re.sub(r"\s+\]", "]", out)
     out = re.sub(r"(?:\s*-\s*){2,}", " - ", out)  # empty token left " - - "
     out = re.sub(r"\s{2,}", " ", out)
     out = out.strip(" .-")
@@ -785,12 +817,14 @@ def build_media_tag(
                     f" ({parsed['year']})" if parsed.get("year") else ""
                 )
 
-    quality = quality_tag(
+    res, hdr = quality_parts(
         video,
         hdr_info,
         parsed.get("hints"),
         resolution_target=resolution_target,
+        preserve_dovi=bool(settings.get("preserve_dovi_rpu", True)),
     )
+    quality = quality_tag(res)
     ext = "webm" if str(container).lower() == "webm" else "mp4"
     video = video or {}
     ep = detect_episode_info(input_path.name)
@@ -806,6 +840,7 @@ def build_media_tag(
         year=parsed.get("year"),
         imdb_id=parsed.get("imdb_id"),
         quality=quality,
+        hdr=hdr,
         ext=ext,
         width=video.get("width"),
         height=video.get("height"),
@@ -829,6 +864,10 @@ def build_media_tag(
         "imdb_id": parsed.get("imdb_id"),
         "tmdb_id": (tmdb or {}).get("tmdb_id"),
         "quality": quality,
+        # Kept separately so the UI can show the HDR format even when the
+        # naming template has no [hdr] token
+        "resolution": res,
+        "hdr_label": hdr,
         "resolution_target": resolution_target or "source",
         "library_name": library_name,
         # Persisted so refresh_media_tag_quality re-renders [original] from the
@@ -854,19 +893,29 @@ def refresh_media_tag_quality(
     resolution_target: Optional[str] = None,
     container: str = "mp4",
     settings: Optional[Dict[str, Any]] = None,
+    hdr_override: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Update quality / library_name when preset resolution target changes."""
+    """
+    Update quality / library_name when the preset resolution target or naming
+    settings change, or (hdr_override) to the output check's HDR label after
+    the encode.
+    """
     from core.app_settings import load_settings
 
     tag = dict(media_tag or {})
     settings = settings if isinstance(settings, dict) else load_settings()
-    quality = quality_tag(
+    res, hdr = quality_parts(
         video,
         hdr_info,
         tag.get("hints"),
         resolution_target=resolution_target,
+        preserve_dovi=bool(settings.get("preserve_dovi_rpu", True)),
+        hdr_override=hdr_override,
     )
+    quality = quality_tag(res)
     tag["quality"] = quality
+    tag["resolution"] = res
+    tag["hdr_label"] = hdr
     tag["resolution_target"] = resolution_target or "source"
     ext = "webm" if str(container).lower() == "webm" else "mp4"
     video = video or {}
@@ -876,6 +925,7 @@ def refresh_media_tag_quality(
         year=tag.get("year"),
         imdb_id=tag.get("imdb_id"),
         quality=quality,
+        hdr=hdr,
         ext=ext,
         width=video.get("width"),
         height=video.get("height"),
