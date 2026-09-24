@@ -316,9 +316,9 @@ raise SystemExit(0 if found else 1)
 """
             r = subprocess.run([str(python_exe), "-c", extract_code])
             if r.returncode != 0 or not (autoload_dir / "ffms2.dll").exists():
-                note_error("FFMS2 downloaded but ffms2.dll was not installed.")
+                note_warning("FFMS2 downloaded but ffms2.dll was not installed — SSIMU2 scoring won't work.")
         except Exception as e:
-            note_error(f"Error installing FFMS2: {e}")
+            note_warning(f"Error installing FFMS2 ({e}) — SSIMU2 scoring won't work.")
 
 
 def verify_required() -> None:

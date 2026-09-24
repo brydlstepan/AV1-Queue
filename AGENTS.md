@@ -30,7 +30,7 @@ Single-pass only — **no** fast pass, metrics-driven CRF zones, or multi-pass A
 1. **Prepare** — HDR/DoVi analysis (skip / quarantine policy), audio selection, test segment — `core/queue_manager.py` / `core/pipeline.py`
 2. **Encode** — HandBrakeCLI: autocrop (`--crop-mode conservative --previews 30:0`, applied crop parsed back from its log for SSIMU2), `--maxHeight` + `--loose-anamorphic` (never HandBrake's default auto anamorphic — it stretches pixels instead of scaling width), `svt_av1_10bit` with `--encoder-preset` / `-q`, preset `svt_params` as `-x`, `--hdr-dynamic-metadata`, audio → Opus (`eac3` per preset), MP4 (`-O`) or WebM
 3. **Verify & publish** — `*.partial.<ext>` → HDR check → rename into place
-4. **Subtitles (optional)** — Extract from **original** beside the source; background thread so the next job can start
+4. **Subtitles (optional)** — Per-job `subtitle_tracks` (stream indices; missing = by language / kind rule, `[]` = none) read from the **original**, written beside the **output** under the output's name; optional OpenSubtitles fill; background thread so the next job can start. Test Mode: only with `test_mode_subtitles` — same full-length extract + search, named after the test file (a "subtitles are found" check, not segment-timed)
 5. **SSIMU2 (optional)** — Post-encode score via Vship (GPU) or vszip (CPU)
 
 The app decides *what* to encode (policy, tracks, target size); HandBrake does crop detection, the encode and all HDR metadata handling. Don't reintroduce a parallel encode stack.

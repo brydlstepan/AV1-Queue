@@ -14,6 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const SSIMU2_POST_KEY = "av1queue_ssimu2_post";
   const EXTRACT_SUBS_KEY = "av1queue_extract_subtitles";
   const STRIP_SUB_CREDITS_KEY = "av1queue_subtitle_strip_credits";
+  const TEST_MODE_SUBS_KEY = "av1queue_test_mode_subtitles";
   const CONTAINER_KEY = "av1queue_container";
   const SVT_LP_KEY = "av1queue_svt_lp";
   const SVT_LOW_MEMORY_KEY = "av1queue_svt_low_memory";
@@ -436,6 +437,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const inspFileName = document.getElementById("inspFileName");
   const inspVideoMeta = document.getElementById("inspVideoMeta");
   const inspAudioTracks = document.getElementById("inspAudioTracks");
+  const inspSubTracks = document.getElementById("inspSubTracks");
   const btnConfirmAddJob = document.getElementById("btnConfirmAddJob");
 
   // Preset Manager Elements
@@ -590,6 +592,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const saved = localStorage.getItem(EXTRACT_SUBS_KEY);
     return saved === null ? true : saved === "1";
+  }
+
+  function getTestModeSubtitlesEnabled() {
+    const el = document.getElementById("globalTestModeSubtitles");
+    if (el && el.getAttribute("aria-checked") != null) {
+      return el.getAttribute("aria-checked") === "true";
+    }
+    return localStorage.getItem(TEST_MODE_SUBS_KEY) === "1";
   }
 
   function getStripSubCreditsEnabled() {
@@ -817,7 +827,8 @@ document.addEventListener("DOMContentLoaded", () => {
     [
       "pipelineSubtitleTypesGroup",
       "pipelineSubLangsRow",
-      "pipelineStripSubCreditsRow"
+      "pipelineStripSubCreditsRow",
+      "pipelineTestModeSubsRow"
     ].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.toggle("hidden", !on);
@@ -828,6 +839,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireLocalStoragePipelineToggle(document.getElementById("globalSsimu2Post"), SSIMU2_POST_KEY, false);
   wireLocalStoragePipelineToggle(document.getElementById("globalExtractSubtitles"), EXTRACT_SUBS_KEY, true, syncExtractSubsDependentRows);
   wireLocalStoragePipelineToggle(document.getElementById("globalStripSubCredits"), STRIP_SUB_CREDITS_KEY, true);
+  wireLocalStoragePipelineToggle(document.getElementById("globalTestModeSubtitles"), TEST_MODE_SUBS_KEY, false);
   wireLocalStoragePipelineToggle(document.getElementById("globalAudioBestOnly"), AUDIO_BEST_ONLY_KEY, true);
 
   function reconcileAudioFormatAndContainer() {
@@ -1091,6 +1103,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ssimu2Post: getSsimu2PostEnabled(),
       extractSubs: getExtractSubtitlesEnabled(),
       stripSubCredits: getStripSubCreditsEnabled(),
+      testModeSubs: getTestModeSubtitlesEnabled(),
       audioBestOnly: getAudioBestOnly(),
       audioFormat: getAudioFormat(),
       audioLangs: [...pipelineAudioLanguages],
@@ -1143,6 +1156,9 @@ document.addEventListener("DOMContentLoaded", () => {
     setPipelineToggle(document.getElementById("globalStripSubCredits"), snap.stripSubCredits !== false);
     localStorage.setItem(STRIP_SUB_CREDITS_KEY, snap.stripSubCredits !== false ? "1" : "0");
     syncPipelineFieldRow(document.getElementById("globalStripSubCredits"));
+    setPipelineToggle(document.getElementById("globalTestModeSubtitles"), !!snap.testModeSubs);
+    localStorage.setItem(TEST_MODE_SUBS_KEY, snap.testModeSubs ? "1" : "0");
+    syncPipelineFieldRow(document.getElementById("globalTestModeSubtitles"));
 
     setPipelineToggle(document.getElementById("globalAudioBestOnly"), snap.audioBestOnly !== false);
     localStorage.setItem(AUDIO_BEST_ONLY_KEY, snap.audioBestOnly !== false ? "1" : "0");
@@ -1222,6 +1238,7 @@ document.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem(SSIMU2_POST_KEY, getSsimu2PostEnabled() ? "1" : "0");
     localStorage.setItem(EXTRACT_SUBS_KEY, getExtractSubtitlesEnabled() ? "1" : "0");
     localStorage.setItem(STRIP_SUB_CREDITS_KEY, getStripSubCreditsEnabled() ? "1" : "0");
+    localStorage.setItem(TEST_MODE_SUBS_KEY, getTestModeSubtitlesEnabled() ? "1" : "0");
     localStorage.setItem(AUDIO_BEST_ONLY_KEY, getAudioBestOnly() ? "1" : "0");
     localStorage.setItem(AUDIO_FORMAT_KEY, getAudioFormat());
     saveLangList(AUDIO_LANGS_KEY, pipelineAudioLanguages);
@@ -1375,6 +1392,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ssimu2_post: getSsimu2PostEnabled(),
       extract_subtitles: getExtractSubtitlesEnabled(),
       subtitle_strip_credits: getStripSubCreditsEnabled(),
+      test_mode_subtitles: getTestModeSubtitlesEnabled(),
       subtitle_languages: getPipelineSubLanguages(),
       subtitle_kinds: getPipelineSubKinds(),
       autoname_output: true,
@@ -1387,7 +1405,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  // Fields owned by the preset (ignore job-only: test_mode, trim, audio_tracks_order)
+  // Fields owned by the preset (ignore job-only: test_mode, trim, audio_tracks_order, subtitle_tracks)
   const PRESET_SYNC_KEYS = [
     "preset_id", "preset_name", "crf", "preset", "resolution_target",
     "audio_bitrate_51", "audio_bitrate_stereo", "svt_params"
@@ -1442,6 +1460,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // Keep manual audio selection if present
     if (Array.isArray(cur.audio_tracks_order)) {
       fresh.audio_tracks_order = [...cur.audio_tracks_order];
+    }
+    if (Array.isArray(cur.subtitle_tracks)) {
+      fresh.subtitle_tracks = [...cur.subtitle_tracks];
     }
     return fresh;
   }
@@ -3106,6 +3127,87 @@ document.addEventListener("DOMContentLoaded", () => {
     return [...priority.flatMap(key => buckets[key]), ...other];
   }
 
+  // --- Subtitle track lists (inspector + edit dialog) ---
+  // Pre-selection mirrors core/subtitle_extract.select_default_subtitle_indices:
+  // text tracks whose language is in the subtitle languages (empty = any) and
+  // whose kind (standard / forced / sdh) is enabled. Image-based tracks (PGS,
+  // VobSub) are listed but can't be extracted to sidecars.
+  const SUB_TEXT_CODECS = new Set(["subrip", "ass", "ssa", "webvtt", "mov_text"]);
+  const SUB_KIND_LABELS = { standard: "Standard", forced: "Forced", sdh: "SDH" };
+  const SUB_CODEC_EXT = { subrip: "SRT", mov_text: "SRT", ass: "ASS", ssa: "ASS", webvtt: "VTT" };
+
+  function isTextSubtitle(t) {
+    // Jobs probed before kind/text were recorded only have the codec
+    return typeof t.text === "boolean" ? t.text : SUB_TEXT_CODECS.has(String(t.codec || "").toLowerCase());
+  }
+
+  function getAutoSelectedSubIds(tracks, languages, kinds) {
+    const langs = (languages || []).map(langFamily);
+    const kindSet = new Set(kinds || []);
+    const selected = new Set();
+    tracks.forEach(t => {
+      if (!isTextSubtitle(t)) return;
+      if (langs.length && !langs.includes(langFamily(t.language))) return;
+      if (!kindSet.has(t.kind || "standard")) return;
+      selected.add(t.stream_index);
+    });
+    return selected;
+  }
+
+  function subtitleRowsHtml(tracks, selected) {
+    return tracks.map(t => {
+      const text = isTextSubtitle(t);
+      const kind = t.kind || "standard";
+      const codec = String(t.codec || "").toLowerCase();
+      const lang = (t.language || "und").toUpperCase();
+      const title = (t.title || "").trim() || `${SUB_KIND_LABELS[kind] || "Standard"} subtitles`;
+      const badge = text
+        ? `${SUB_KIND_LABELS[kind] || "Standard"} · ${SUB_CODEC_EXT[codec] || "SRT"}`
+        : "Image · can't extract";
+      const checked = text && selected.has(t.stream_index) ? "checked" : "";
+      const desc = `${codec || "unknown"}${t.default ? " · default" : ""}`;
+      return `
+          <label class="track-row${text ? "" : " is-disabled"}" data-sidx="${t.stream_index}"${text ? "" : ' title="Image-based subtitles can\'t be extracted to a text sidecar"'}>
+            <input type="checkbox" class="track-checkbox" data-sidx="${t.stream_index}" ${checked} ${text ? "" : "disabled"}>
+            <div class="track-info">
+              <div class="track-primary">
+                <span class="track-lang ${langToneClass(t.language)}">${escapeHtml(lang)}</span>
+                <span class="track-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+              </div>
+              <span class="track-desc">${escapeHtml(desc)}</span>
+            </div>
+            <span class="track-badge">${escapeHtml(badge)}</span>
+          </label>`;
+    }).join("");
+  }
+
+  function subtitleHintText(tracks, extractEnabled) {
+    if (!tracks.length) return "";
+    if (!extractEnabled) return "Subtitle extraction is off in Settings, so nothing will be extracted.";
+    const hasImage = tracks.some(t => !isTextSubtitle(t));
+    return "Ticked text tracks are saved next to the encoded file, named after it. New files start with the tracks that match your subtitle languages and kinds."
+      + (hasImage ? " Image-based tracks (PGS / VobSub) can't be extracted." : "");
+  }
+
+  function renderSubtitleList(container, hintEl, tracks, { languages, kinds, selected, extractEnabled }) {
+    if (!container) return;
+    const ordered = orderTracksByLanguage(tracks, (languages || []).map(langFamily));
+    const chosen = selected || getAutoSelectedSubIds(ordered, languages, kinds);
+    container.innerHTML = ordered.length
+      ? subtitleRowsHtml(ordered, chosen)
+      : `<div class="track-empty">No subtitle tracks in this file.</div>`;
+    if (hintEl) {
+      hintEl.textContent = subtitleHintText(ordered, extractEnabled);
+      hintEl.classList.toggle("hidden", !hintEl.textContent);
+    }
+  }
+
+  function checkedStreamIndices(container) {
+    if (!container) return [];
+    return [...container.querySelectorAll(".track-checkbox:checked")]
+      .map(cb => parseInt(cb.getAttribute("data-sidx"), 10));
+  }
+
   function pickBestTrack(tracks) {
     if (!tracks || tracks.length === 0) return null;
     return tracks.reduce((best, t) => {
@@ -3164,7 +3266,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function applyAutoAudioSelection(tracks) {
     const prefs = getPipelineAudioPrefs();
     const auto = getAutoSelectedTrackIds(tracks, prefs);
-    document.querySelectorAll(".track-checkbox").forEach(cb => {
+    inspAudioTracks.querySelectorAll(".track-checkbox").forEach(cb => {
       const sidx = parseInt(cb.getAttribute("data-sidx"), 10);
       cb.checked = auto.has(sidx);
     });
@@ -3191,6 +3293,7 @@ document.addEventListener("DOMContentLoaded", () => {
       inspFileName.textContent = shortName;
       inspVideoMeta.innerHTML = `<span class="badge badge-av1">Probing streams...</span>`;
       inspAudioTracks.innerHTML = `<div class="track-empty">Loading audio streams...</div>`;
+      if (inspSubTracks) inspSubTracks.innerHTML = `<div class="track-empty">Loading subtitle streams...</div>`;
 
       const res = await fetch(`/api/probe?path=${encodeURIComponent(filePath)}&audio_format=${encodeURIComponent(getAudioFormat())}`);
       const data = await res.json();
@@ -3242,6 +3345,12 @@ document.addEventListener("DOMContentLoaded", () => {
         applyAutoAudioSelection(tracks);
       }
 
+      renderSubtitleList(inspSubTracks, document.getElementById("inspSubHint"), data.media?.subtitle_tracks || [], {
+        languages: getPipelineSubLanguages(),
+        kinds: getPipelineSubKinds(),
+        extractEnabled: getExtractSubtitlesEnabled()
+      });
+
       const inspPresetSelect = document.getElementById("inspPresetSelect");
       if (inspPresetSelect && !inspPresetSelect.dataset.audioBound) {
         inspPresetSelect.dataset.audioBound = "1";
@@ -3260,10 +3369,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   btnConfirmAddJob.addEventListener("click", async () => {
     if (!currentProbedMedia) return;
-    const selectedSidx = [];
-    document.querySelectorAll(".track-checkbox:checked").forEach(cb => {
-      selectedSidx.push(parseInt(cb.getAttribute("data-sidx"), 10));
-    });
+    const selectedSidx = checkedStreamIndices(inspAudioTracks);
 
     const inspPresetSelect = document.getElementById("inspPresetSelect");
     const chosenPresetId = inspPresetSelect ? inspPresetSelect.value : selectedPreset;
@@ -3275,6 +3381,8 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     // Always persist selection; [] means video-only (no auto fallback)
     payload.config.audio_tracks_order = selectedSidx;
+    // Same for subtitles; [] means extract none
+    payload.config.subtitle_tracks = checkedStreamIndices(inspSubTracks);
 
     try {
       await fetchJson("/api/queue/add", {
@@ -3316,17 +3424,22 @@ document.addEventListener("DOMContentLoaded", () => {
   const editJobTabParams = document.getElementById("editJobTabParams");
   const editJobDetailsSection = document.getElementById("editJobDetailsSection");
   const editJobAudioSection = document.getElementById("editJobAudioSection");
+  const editJobTabSubs = document.getElementById("editJobTabSubs");
+  const editJobSubsSection = document.getElementById("editJobSubsSection");
+  const editJobSubTracks = document.getElementById("editJobSubTracks");
   const editJobParamsSection = document.getElementById("editJobParamsSection");
 
   function showEditJobSection(which) {
     const sections = {
       details: editJobDetailsSection,
       audio: editJobAudioSection,
+      subs: editJobSubsSection,
       params: editJobParamsSection
     };
     const tabs = {
       details: editJobTabDetails,
       audio: editJobTabAudio,
+      subs: editJobTabSubs,
       params: editJobTabParams
     };
     Object.entries(sections).forEach(([key, el]) => {
@@ -3339,6 +3452,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (editJobTabDetails) editJobTabDetails.addEventListener("click", () => showEditJobSection("details"));
   if (editJobTabAudio) editJobTabAudio.addEventListener("click", () => showEditJobSection("audio"));
+  if (editJobTabSubs) editJobTabSubs.addEventListener("click", () => showEditJobSection("subs"));
   if (editJobTabParams) editJobTabParams.addEventListener("click", () => showEditJobSection("params"));
   const editJobId = document.getElementById("editJobId");
   const editJobFileName = document.getElementById("editJobFileName");
@@ -3685,6 +3799,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Preview what Save would apply from the newly selected preset
         renderEditJobParams(buildConfigFromPreset(chosen, {
           audio_tracks_order: job.config?.audio_tracks_order,
+          subtitle_tracks: job.config?.subtitle_tracks,
           test_mode: job.config?.test_mode,
           trim_start: job.config?.trim_start,
           trim_end: job.config?.trim_end
@@ -3743,6 +3858,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     }
 
+    // Subtitles: explicit list (including []) = saved choice; missing (jobs
+    // queued before per-track selection) = what the rules would extract
+    const subCfg = job.config || {};
+    const subOrder = subCfg.subtitle_tracks;
+    renderSubtitleList(editJobSubTracks, document.getElementById("editJobSubHint"), job.media_info?.subtitle_tracks || [], {
+      languages: Array.isArray(subCfg.subtitle_languages) ? subCfg.subtitle_languages : getPipelineSubLanguages(),
+      kinds: Array.isArray(subCfg.subtitle_kinds) ? subCfg.subtitle_kinds : getPipelineSubKinds(),
+      selected: Array.isArray(subOrder) ? new Set(subOrder) : null,
+      extractEnabled: subCfg.extract_subtitles !== false
+    });
+
     editJobModal.classList.remove("hidden");
   }
 
@@ -3768,7 +3894,8 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       const config = buildConfigFromPreset(activeP, {
         ...getTestModeJobFields(),
-        audio_tracks_order: selectedSidx
+        audio_tracks_order: selectedSidx,
+        subtitle_tracks: checkedStreamIndices(editJobSubTracks)
       });
       const yearRaw = document.getElementById("editJobYear")?.value?.trim();
       const imdbRaw = (document.getElementById("editJobImdb")?.value || "").trim();

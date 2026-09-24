@@ -10,6 +10,7 @@ Local **AV1 encoding queue** with a browser UI. Drives [HandBrakeCLI built with 
 - **Queue studio** — Drag/drop or browse files, reorder, start/stop, edit queued jobs, reset cancelled/failed jobs
 - **Presets** — CRF/preset/tune, Opus bitrates, SVT-AV1-Tritium advanced params (non-defaults → HandBrake `-x` encoder options)
 - **Audio** — Preferred languages + best-track-only in presets; Opus 5.1 (incl. 7.1 downmix) / stereo; video-only if none selected
+- **Subtitles** — Per-job track choice alongside audio (pre-selected by subtitle languages and kinds); extracted to text sidecars named after the output, optional OpenSubtitles fill for what's missing
 - **HDR / Dolby Vision** — See [Format philosophy → HDR & Dolby Vision](#hdr--dolby-vision) (HDR10 / HLG / HDR10+ passthrough; DoVi base layer → HDR10, with DoVi RPU passthrough on by default; P5 skipped; P4 / unconfirmed filename-DoVi / unknown profile-compat quarantined)
 
 - **Test mode** — Short time-range encodes for quick preset checks
@@ -31,7 +32,7 @@ Local **AV1 encoding queue** with a browser UI. Drives [HandBrakeCLI built with 
 | Quality metrics (optional) | **VapourSynth** + **FFMS2**, **vszip** (CPU), **Vship** (NVIDIA GPU) — post-encode SSIMU2 |
 | System metrics | **psutil** |
 
-Python packages (installed into `vs/python-env/` by setup from `requirements.txt`): `fastapi`, `uvicorn[standard]`, `websockets`, `psutil`, `vapoursynth`, `vstools`, `vsjetpack`, `rich`, `py7zr`, …
+Python packages (installed into `vs/python-env/` by setup from `requirements.txt`): `fastapi`, `uvicorn[standard]`, `websockets`, `psutil`, `vapoursynth`, `vstools`, `vsjetpack`, `py7zr`, `langcodes`, `guessit`, `watchdog`, …
 
 ---
 
@@ -90,17 +91,27 @@ Or run it in the foreground with a visible console (for debugging — live log o
 AV1-Queue/
 ├── setup.bat                  # Double-click installer (console stays open)
 ├── runGUI.bat                 # Launch server as a background tray-icon process
+├── .env.example               # Launcher settings template (copy to .env)
 ├── bin/                       # ffmpeg, ffprobe; HandBrakeCLI under bin/handbrake/
 ├── vs/
 │   ├── portable.vs
 │   ├── python-env/            # Isolated Python venv (VS plugins also autoload here)
 │   └── plugins64/             # Plugin copies for PATH / DLL resolution
 ├── core/
-│   ├── handbrake_encode.py    # HandBrakeCLI command builder
-│   ├── pipeline.py            # Probe, audio selection, test segment, HandBrake runner, SSIMU2, cleanup
 │   ├── queue_manager.py       # Job lifecycle & encode orchestration
+│   ├── handbrake_encode.py    # HandBrakeCLI command builder + applied-crop parser
+│   ├── pipeline.py            # Probe, audio selection, test segment, HandBrake runner, SSIMU2, cleanup
 │   ├── hdr_dovi.py            # HDR / Dolby Vision detection (skip policy, output check)
-│   └── measure_ssimu2.py
+│   ├── media_tagging.py       # Release-name parsing, TMDB lookup, library output names
+│   ├── subtitle_extract.py    # Text subtitle sidecars from the source
+│   ├── subtitle_search.py     # OpenSubtitles search / download for missing sidecars
+│   ├── watch_folder.py        # Auto-queue new files from a watched folder
+│   ├── presets_store.py       # Preset JSON files (builtin/ + local/)
+│   ├── app_settings.py        # settings.json + per-job config defaults
+│   ├── measure_ssimu2.py      # SSIMU2 scorer (VapourSynth, run as a subprocess)
+│   ├── vs_geometry.py         # Crop / downscale helpers for SSIMU2
+│   ├── win_process.py         # Windows EcoQoS opt-out for encode processes
+│   └── run_server.py          # uvicorn wrapper used by the launchers
 ├── server/
 │   ├── app.py                 # FastAPI routes & WebSocket
 │   ├── static/                # Queue UI (index.html, app.js, app.css)
@@ -116,7 +127,9 @@ AV1-Queue/
     ├── setup_env.py           # Download HandBrakeCLI, FFmpeg, plugins, venv
     ├── start_queue.ps1        # Foreground launcher (visible console, for debugging)
     ├── tray_launcher.ps1      # Background launcher used by runGUI.bat (tray icon)
-    └── launch_hidden.vbs      # Runs tray_launcher.ps1 with zero window flash
+    ├── load_env.ps1           # Loads .env into both launchers
+    ├── launch_hidden.vbs      # Runs tray_launcher.ps1 with zero window flash
+    └── survey_library.py      # One-off report of the HDR layers a library carries
 ```
 
 ---
@@ -126,7 +139,7 @@ AV1-Queue/
 1. **Prepare** — HDR / Dolby Vision analysis (drives the skip / quarantine rules below), audio track selection, test-mode segment cut
 2. **Encode** — [HandBrakeCLI built with SVT-AV1-Tritium](https://github.com/Uranite/HandBrake-SVT-AV1-Tritium) in one process: autocrop, downscale, single-pass SVT-AV1-Tritium (`--encoder-preset` / `-q`, preset SVT params as `-x key=value:…`), HDR10+ / Dolby Vision passthrough (`--hdr-dynamic-metadata`), selected audio → Opus (or E-AC-3 per preset), MP4 (`+faststart`) or WebM mux. No fast pass, no metrics, no CRF zones
 3. **Verify & publish** — The output is written as `*.partial.mp4` beside the destination and only renamed into place after checking that a source that was HDR came out HDR
-4. **Subtitles (optional)** — Text tracks extracted from the **original** file next to it (`.en.srt`, etc.); runs in a **background thread** so the next queue job can start immediately
+4. **Subtitles (optional)** — The job's chosen text tracks (the **Subtitles** section of the import inspector / edit dialog; new jobs start with the tracks matching your subtitle languages and kinds, image-based PGS / VobSub tracks are listed but can't be extracted) are read from the **original** file and written next to the **encoded output** (SRT / ASS / WebVTT are copied as-is; MP4 `mov_text` is converted to SRT), named after it (`<output name>.en.srt`, `.forced.srt`, `.sdh.srt`); languages / kinds still missing can then be fetched from OpenSubtitles (moviehash of the original first, then FPS and release-name match, IMDb / title search to find candidates). Runs in a **background thread** after SSIMU2, so the next queue job can start immediately. Test Mode encodes get no sidecars unless **Settings → Subtitles → Extract subtitles in Test Mode** is on (off by default): then this step runs unchanged, online search included, with sidecars named after the test file. It's a check that subtitles are found and exported: they're full-length, not cut to the test segment
 5. **SSIMU2 (optional)** — Post-encode quality score via Vship (GPU) or vszip (CPU), when enabled in settings
 
 **What the app decides vs. what HandBrake decides.** The app owns probe, the DoVi skip / quarantine policy, audio track selection and order, resolution target (`--maxHeight`, downscale only, with `--loose-anamorphic` so the width scales along and pixels stay square: a 3840×1600 source at 1080p becomes 2592×1080), test-mode segments, SSIMU2, subtitles and the watch folder. HandBrake owns autocrop, the encode itself, HDR10 static metadata, HDR10+ and Dolby Vision passthrough (including the P7 → 8.1 RPU conversion and the RPU's active-area fix after cropping), audio encoding and the container. Preset `svt_params` and the lp / low-memory settings reach the Tritium library as HandBrake encoder options under the same names SvtAv1EncApp takes. Chapters and subtitles are stripped from the output (`--no-markers`, `-s none`); audio tracks are left unnamed (`--no-keep-aname`), so players label them from language, codec and layout. HandBrake's full activity log for a job is `_temp/job_<id>/encode/handbrake.log` while it runs.
@@ -176,6 +189,8 @@ Since a non-DoVi player simply reads the HDR10 base layer and ignores an RPU it 
 
 Both are HandBrake's: it reads the HDR10+ SEI and the Dolby Vision RPU from the source, writes them into the AV1 stream, and signals Dolby Vision in the MP4 container. It applies the same rules this app used to implement itself: a profile-7 RPU (or profile 8 with Blu-ray compat id 6) is rewritten to profile 8.1 because the enhancement layer isn't encoded (FEL detail is discarded), and after a crop the RPU's active area is corrected to match the cropped picture. WebM cannot signal Dolby Vision.
 
+**Not yet verified here on real sources:** Dolby Vision and HDR10+ passthrough have only been exercised on synthetic clips so far — check the job log's "Output check" line on your first DoVi / HDR10+ encodes.
+
 **What's checked afterwards:** a source that was HDR must come out HDR, or the output is discarded and the job fails. Dolby Vision missing from the output only warns, since it's best-effort. HDR10+ can't be confirmed afterwards (the bundled ffprobe can't read AV1 frame metadata), so HandBrake is trusted to carry it, and the job log says so.
 
 **Chroma siting:** the source's 4:2:0 chroma location is passed as the SVT `chroma-sample-position` option (`left` → `vertical`, `topleft` → `colocated`), since HandBrake otherwise leaves it unset, so the AV1 sequence header matches the source instead of saying "unknown". Applies to SDR and HDR alike; other locations stay unknown.
@@ -207,7 +222,7 @@ Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8
 - **Presets** — Individual JSON files under `server/presets/builtin/` (git-tracked) and `server/presets/local/` (UI-created, gitignored). Each has `crf` / `preset` plus advanced SVT overrides as `svt_params`, passed to HandBrake as `-x key=value:…` encoder options (`core/handbrake_encode.py`). Built-in presets are read-only in the UI unless **Settings → App → Enable built-in preset edits** is on. The preset editor shows a live preview of the non-default encoder options.
 - **Queue** — Survives restarts via `server/queue.json`. Cancelled/failed jobs can be **Reset** back to queued.
 - **Test mode** — Global toggle + duration settings in the UI; jobs can run a short trim instead of the full file.
-- **Audio defaults** — On add, empty selection falls back to English/Czech heuristics. Explicit empty selection in the job editor means video-only.
+- **Audio defaults** — With no explicit selection, a job takes the best track per preferred language (Settings → Audio, English by default; best = surround first, then channel count, then bitrate), or the single best track overall if none match. An explicit empty selection in the job editor means video-only.
 - **HDR** — See [Format philosophy → HDR & Dolby Vision](#hdr--dolby-vision).
 
 ---

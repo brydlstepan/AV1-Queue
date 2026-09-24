@@ -1324,6 +1324,20 @@ body {
   letter-spacing: 0.6px;
 }
 
+.insp-section-title--spaced {
+  margin-top: 16px;
+}
+
+/* Image-based subtitles (PGS / VobSub) are listed but can't be extracted */
+.track-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.track-row.is-disabled:hover {
+  border-color: var(--border-subtle);
+}
+
 .insp-section-hint {
   font-size: 12px;
   color: var(--text-dim);

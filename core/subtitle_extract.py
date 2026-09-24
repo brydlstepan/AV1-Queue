@@ -14,7 +14,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-TEXT_SUB_CODECS = {"subrip", "ass", "ssa", "webvtt"}
+# mov_text (MP4 / tx3g) has no sidecar format of its own — it is converted
+# to SRT (both are plain timed text; only rare tx3g styling is dropped).
+# The rest are stream-copied.
+TEXT_SUB_CODECS = {"subrip", "ass", "ssa", "webvtt", "mov_text"}
 
 
 def _ffmpeg_file_arg(path: Path) -> str:
@@ -44,6 +47,54 @@ def iso6391(code: Optional[str]) -> str:
     if re.fullmatch(r"[a-z]{2}", c):
         return c
     return "und"
+
+
+def subtitle_kind(stream: Dict[str, Any]) -> str:
+    """"forced" / "sdh" / "standard" from an ffprobe subtitle stream's disposition + title."""
+    disp = stream.get("disposition") or {}
+    title = str((stream.get("tags") or {}).get("title") or "")
+    if disp.get("forced") == 1:
+        return "forced"
+    if disp.get("hearing_impaired") == 1 or re.search(r"\b(sdh|hi|cc)\b", title, re.I):
+        return "sdh"
+    return "standard"
+
+
+def _lang_filter(languages: Optional[List[str]]) -> Optional[set]:
+    """None = any language. Accepts 2- or 3-letter codes."""
+    if not languages:
+        return None
+    wanted = {iso6391(x) for x in languages if x}
+    # Also accept 3-letter forms that map to the same 2-letter code
+    wanted |= {str(x).strip().lower()[:3] for x in languages if x}
+    return wanted
+
+
+def _lang_ok(language: Optional[str], wanted: Optional[set]) -> bool:
+    if wanted is None:
+        return True
+    raw = str(language or "und").strip().lower()
+    return iso6391(language) in wanted or raw in wanted or raw[:3] in wanted
+
+
+def select_default_subtitle_indices(
+    tracks: List[Dict[str, Any]],
+    languages: Optional[List[str]] = None,
+    kinds: Optional[List[str]] = None,
+) -> List[int]:
+    """
+    Stream indices extraction would pick by rule: text tracks in `languages`
+    (empty/None = any) whose kind is in `kinds` (None = any, [] = none).
+    tracks are pipeline.probe_media subtitle_tracks (language / kind / text).
+    """
+    wanted = _lang_filter(languages)
+    kind_filter = None if kinds is None else {str(k).strip().lower() for k in kinds if k}
+    return [
+        t["stream_index"] for t in tracks
+        if t.get("text")
+        and _lang_ok(t.get("language"), wanted)
+        and (kind_filter is None or t.get("kind") in kind_filter)
+    ]
 
 
 def normalize_subtitle_utf8(path: Path) -> Optional[str]:
@@ -293,6 +344,7 @@ def extract_text_subtitles(
     basename: Optional[str] = None,
     languages: Optional[List[str]] = None,
     kinds: Optional[List[str]] = None,
+    stream_indices: Optional[List[int]] = None,
     strip_credits: bool = False,
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
@@ -304,6 +356,9 @@ def extract_text_subtitles(
 
     languages: ISO codes (2 or 3 letter). Empty/None = all languages.
     kinds: subset of {"standard", "forced", "sdh"}. Empty/None = all kinds.
+    stream_indices: explicit track choice (the job's subtitle_tracks) — only
+    these streams are extracted and languages / kinds are ignored; [] = none.
+    Image-based tracks are skipped either way.
     strip_credits: remove leading/trailing author/copyright cues when True.
 
     Returns {status, extracted, files, message}.
@@ -317,16 +372,17 @@ def extract_text_subtitles(
         if progress_cb:
             progress_cb(msg)
 
-    lang_filter = None
-    if languages:
-        lang_filter = {iso6391(x) for x in languages if x}
-        # Also accept 3-letter forms that map to the same 2-letter code
-        lang_filter |= {str(x).strip().lower()[:3] for x in languages if x}
+    lang_filter = _lang_filter(languages)
 
     # None = all kinds; [] = extract none
     kind_filter = None
     if kinds is not None:
         kind_filter = {str(k).strip().lower() for k in kinds if k}
+
+    chosen = None if stream_indices is None else {int(i) for i in stream_indices}
+    if chosen is not None and not chosen:
+        log("No subtitle tracks selected")
+        return {"status": "skip", "extracted": 0, "files": [], "message": "no subtitle tracks selected"}
 
     if not source_file.is_file():
         return {"status": "error", "extracted": 0, "files": [], "message": f"Source not found: {source_file}"}
@@ -386,30 +442,19 @@ def extract_text_subtitles(
 
         tags = stream.get("tags") or {}
         lang = iso6391(tags.get("language"))
-        lang_raw = str(tags.get("language") or "und").strip().lower()
         title = str(tags.get("title") or "")
-        disp = stream.get("disposition") or {}
+        kind = subtitle_kind(stream)
 
-        if lang_filter is not None:
-            if lang not in lang_filter and lang_raw not in lang_filter and lang_raw[:3] not in lang_filter:
+        if chosen is not None:
+            if int(index) not in chosen:
+                continue
+        else:
+            if not _lang_ok(tags.get("language"), lang_filter):
+                continue
+            if kind_filter is not None and kind not in kind_filter:
                 continue
 
-        is_forced = disp.get("forced") == 1
-        is_sdh = (
-            disp.get("hearing_impaired") == 1
-            or bool(re.search(r"\b(sdh|hi|cc)\b", title, re.I))
-        )
-        if is_forced:
-            kind = "forced"
-        elif is_sdh:
-            kind = "sdh"
-        else:
-            kind = "standard"
-
-        if kind_filter is not None and kind not in kind_filter:
-            continue
-
-        if codec == "subrip":
+        if codec in ("subrip", "mov_text"):
             ext = "srt"
         elif codec in ("ass", "ssa"):
             ext = "ass"
@@ -434,7 +479,8 @@ def extract_text_subtitles(
         outfile = out_dir / file_name
         log(f"Subtitle + {suffix}.{ext}  ({lang.upper()} · {kind} · {codec}" + (f" · {title}" if title else "") + ")")
 
-        ff_args.extend(["-map", f"0:{index}", "-c:s", "copy", _ffmpeg_file_arg(outfile)])
+        sub_codec = "srt" if codec == "mov_text" else "copy"
+        ff_args.extend(["-map", f"0:{index}", "-c:s", sub_codec, _ffmpeg_file_arg(outfile)])
         outputs.append(outfile)
 
     if not outputs:

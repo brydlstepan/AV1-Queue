@@ -230,21 +230,6 @@ def existing_sidecar_slots(
     return found
 
 
-def existing_sidecar_langs(
-    source_file: Path,
-    languages: List[str],
-    *,
-    basename: Optional[str] = None,
-    output_dir: Optional[Path] = None,
-) -> Set[str]:
-    """Languages that have at least one matching sidecar (any kind)."""
-    slots = existing_sidecar_slots(
-        source_file, languages, ["standard", "forced", "sdh"],
-        basename=basename, output_dir=output_dir,
-    )
-    return {lang for lang, _ in slots}
-
-
 def login_opensubtitles(api_key: str, username: str, password: str) -> Optional[str]:
     if not (api_key and username and password):
         return None
@@ -478,11 +463,6 @@ def pick_best_for_slot(
         )
 
     return sorted(candidates, key=score, reverse=True)[0]
-
-
-def pick_best_for_lang(results: List[Dict[str, Any]], lang: str) -> Optional[Dict[str, Any]]:
-    """Back-compat: best non-HI dialogue track for a language."""
-    return pick_best_for_slot(results, lang, "standard")
 
 
 def _sidecar_filename(stem: str, lang: str, kind: Kind) -> str:

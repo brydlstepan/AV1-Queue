@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Tuple
 
 from core.hdr_dovi import HDRDoviProcessor
-from core.subtitle_extract import extract_text_subtitles
+from core.subtitle_extract import TEXT_SUB_CODECS, extract_text_subtitles, subtitle_kind
 from core.win_process import boost_process
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -533,11 +533,17 @@ class TranscodePipeline:
                     "title": title
                 })
             elif codec_type == "subtitle":
+                codec = str(s.get("codec_name") or "").lower()
                 subtitle_tracks.append({
                     "stream_index": s.get("index", idx),
-                    "codec": s.get("codec_name", ""),
+                    "codec": codec,
                     "language": lang,
-                    "title": title
+                    "title": title,
+                    # standard / forced / sdh — the same rule extraction uses
+                    "kind": subtitle_kind(s),
+                    # Only text subs can be extracted to sidecars (PGS etc. can't)
+                    "text": codec in TEXT_SUB_CODECS,
+                    "default": (s.get("disposition") or {}).get("default") == 1,
                 })
 
         return {
@@ -607,12 +613,11 @@ class TranscodePipeline:
     ) -> List[Dict[str, Any]]:
         """
         Orders audio tracks by preferred languages, then others.
-        Assigns encode targets: ≥5ch → 5.1 (incl. 7.1 downmix), 2ch → stereo, else mono.
-        audio_format: "opus" (libopus) or "eac3".
+        Assigns HandBrake encode targets: ≥5ch → 5.1 (7.1 is downmixed), 2ch →
+        stereo, else mono. audio_format: "opus" or "eac3".
         """
         priority = [self.lang_family(x) for x in (languages or ["eng"])]
         fmt = normalize_audio_format(audio_format)
-        ffmpeg_codec = "eac3" if fmt == "eac3" else "libopus"
 
         if user_selected_indices is not None:
             # Preserve the caller's selection order (inspector checkboxes / remap list)
@@ -632,11 +637,10 @@ class TranscodePipeline:
                 ordered.extend(buckets.get(fam, []))
             ordered.extend(other_tracks)
 
-        # Assign output transcode params (7.1/atmos-ish → 5.1 via ffmpeg -ac 6)
+        # Encode targets for HandBrake (-E / -6 / -B in core/handbrake_encode.py)
         for t in ordered:
             ch = int(t.get("channels") or 0)
             t["audio_format"] = fmt
-            t["target_codec"] = ffmpeg_codec
             if ch >= 5:
                 t["target_channels"] = 6
                 t["target_bitrate"] = bitrate_51 or ("640k" if fmt == "eac3" else "320k")
@@ -914,6 +918,7 @@ class TranscodePipeline:
         output_dir: Optional[Path] = None,
         basename: Optional[str] = None,
         strip_credits: bool = False,
+        stream_indices: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """Extract text subs from the original source (background-safe).
 
@@ -928,6 +933,7 @@ class TranscodePipeline:
             basename=basename,
             languages=languages,
             kinds=kinds,
+            stream_indices=stream_indices,
             strip_credits=strip_credits,
             progress_cb=progress_cb,
         )

@@ -300,8 +300,8 @@ def hdr_label(hdr_info: Optional[Dict[str, Any]]) -> str:
 
     DoVi sources are always tagged by their HDR10 base layer here (P5/P4
     sources are skipped upstream and never reach this). This holds even when
-    settings.preserve_dovi_rpu is on and RPU passthrough succeeds, since RPU
-    extraction is best-effort and this label is filename-stable regardless of
+    settings.preserve_dovi_rpu is on and RPU passthrough succeeds, since the
+    passthrough is best-effort and this label is filename-stable regardless of
     whether that succeeded for a given run — see README.md "HDR & Dolby
     Vision". HDR10plus when that layer is kept; dual-layer DoVi+HDR10+ →
     "HDR10plus" too.
@@ -355,7 +355,7 @@ def quality_tag(
     hdr = hdr_label(hdr_info)
     hint_hdr = str(hints.get("hdr") or "")
     # never let a filename "DoVi"/"HDR10plus" claim override a probe that
-    # found no such layer (would misname encodes without RPU/HDR10+ JSON).
+    # found no such layer (would misname encodes without an RPU / HDR10+ layer).
     # hdr_label returns "" for SDR, so this only ever fills a genuine gap.
     # Filename DoVi hints map to HDR10 — the filename tag always names the base
     # layer, even when DoVi RPU passthrough is on (see hdr_label above).
