@@ -62,7 +62,7 @@ Write-Banner "AV1 QUEUE STUDIO SETUP"
 
 Write-Host "Repo root : $RootDir"
 Write-Host "What this does:"
-Write-Host "  1. Download missing FFmpeg, hdr10plus_tool, SVT-AV1 (if needed)"
+Write-Host "  1. Download missing HandBrakeCLI (SVT-AV1-Tritium build) and FFmpeg"
 Write-Host "  2. Create vs\python-env and install/update Python packages"
 Write-Host "  3. Install missing VapourSynth plugins (ffms2, vszip, vship)"
 Write-Host "  Existing binaries/plugins are left alone; delete them to force a re-download."

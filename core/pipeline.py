@@ -1,12 +1,12 @@
 """
 Transcode & Packaging Pipeline
 Handles:
-- Audio stream discovery, prioritization (preferred languages), and Opus 5.1/Stereo transcoding
-- Dolby Vision / HDR10 metadata detection (SVT color flags)
-- Direct SVT-AV1-Tritium encode (core/svt_encode.py) with real-time progress parsing
-- Final Web-Optimized MP4 / WebM muxing (+faststart, stripped chapters/subtitles, ISO language tags)
-- HDR10 static color tags + HDR10+ passthrough; DoVi RPU passthrough is on by default (see README.md)
-- Temporary cache cleanup
+- Media probe, audio stream discovery and prioritization (preferred languages,
+  Opus / E-AC-3 targets that HandBrake then encodes)
+- Test-mode segment extraction
+- HandBrakeCLI encode runner (command built by core/handbrake_encode.py) with
+  real-time progress parsing, process tracking and pause / cancel
+- Post-encode SSIMU2 scoring, subtitle sidecar extraction, temp cleanup
 """
 
 import os
@@ -21,18 +21,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Tuple
 
 from core.hdr_dovi import HDRDoviProcessor
-from core.mp4_dovi import inject_dolby_vision
 from core.subtitle_extract import extract_text_subtitles
 from core.win_process import boost_process
-
-# The 20 ISO 639-2 codes whose terminological (/T) and bibliographic (/B) forms
-# differ. Only used if langcodes is unavailable — see iso639_2 / _to_bibliographic.
-_ISO639_2T_TO_B = {
-    "bod": "tib", "ces": "cze", "cym": "wel", "deu": "ger", "ell": "gre",
-    "eus": "baq", "fas": "per", "fra": "fre", "hye": "arm", "isl": "ice",
-    "kat": "geo", "mkd": "mac", "mri": "mao", "msa": "may", "mya": "bur",
-    "nld": "dut", "ron": "rum", "slk": "slo", "sqi": "alb", "zho": "chi",
-}
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 BIN_DIR = BASE_DIR / "bin"
@@ -139,7 +129,7 @@ class TranscodePipeline:
     def _kill_pid_tree(pid: int) -> None:
         if not pid:
             return
-        # Prefer Windows taskkill so nested ffmpeg/SVT children die reliably
+        # Prefer Windows taskkill so nested ffmpeg / HandBrake children die reliably
         if os.name == "nt":
             try:
                 subprocess.run(
@@ -182,7 +172,7 @@ class TranscodePipeline:
             pass
 
     def kill_all_processes(self) -> None:
-        """Force-kill the active encode tree and any tracked helpers (ffmpeg, SVT, etc.)."""
+        """Force-kill the active encode tree and any tracked helpers (ffmpeg, HandBrakeCLI, etc.)."""
         with self._proc_lock:
             procs = list(self._tracked_procs)
             if self.current_process is not None:
@@ -501,157 +491,6 @@ class TranscodePipeline:
             progress_cb(f"Test segment ready ({output_file.name}).")
         return output_file
 
-    def detect_black_bar_crop(
-        self,
-        input_file: Path,
-        duration_sec: Optional[float] = None,
-        src_w: Optional[int] = None,
-        src_h: Optional[int] = None,
-        progress_cb: Optional[Callable[[str], None]] = None,
-        cancel_event: Optional[threading.Event] = None,
-    ) -> Dict[str, int]:
-        """
-        HandBrake-style autocrop using ffmpeg cropdetect.
-        Returns {left, top, right, bottom} in pixels (even values). All zeros = no crop.
-        Pass duration_sec / src_w / src_h to skip an extra ffprobe when already known.
-        """
-        ffmpeg = str(self.bin_dir / "ffmpeg.exe")
-        # A caller-supplied duration of 0/None is treated the same: some MKV
-        # remuxes report format.duration as missing, which previously slipped
-        # through as "duration_sec=0.0" (not None) and skipped this re-probe,
-        # leaving autocrop to sample only the first few seconds of the file.
-        if not src_w or not src_h or not duration_sec:
-            media = self.probe_media(input_file)
-            vid = media.get("video") or {}
-            if not src_w:
-                src_w = int(vid.get("width") or 0)
-            if not src_h:
-                src_h = int(vid.get("height") or 0)
-            if not duration_sec:
-                duration_sec = float(media.get("duration") or 0)
-        src_w = int(src_w or 0)
-        src_h = int(src_h or 0)
-        dur = float(duration_sec or 0)
-
-        if src_w < 16 or src_h < 16:
-            return {"left": 0, "top": 0, "right": 0, "bottom": 0}
-
-        # Sample several points (skip very start/end where credits/fades fool detection)
-        sample_starts: List[float] = []
-        if dur <= 45:
-            sample_starts = [0.0]
-        elif dur <= 180:
-            sample_starts = [dur * 0.2, dur * 0.5, dur * 0.75]
-        else:
-            sample_starts = [dur * p for p in (0.12, 0.28, 0.45, 0.62, 0.78)]
-
-        if progress_cb:
-            progress_cb(f"Detecting black bars ({len(sample_starts)} sample(s))...")
-
-        # ffmpeg cropdetect emits the result as "crop=W:H:X:Y" on the summary line.
-        crop_eq = re.compile(r"crop=(?P<w>\d+):(?P<h>\d+):(?P<x>\d+):(?P<y>\d+)")
-
-        # Least-crop-wins: collect every valid detection, then
-        # take the smallest bar per edge (selection + rationale below).
-        edge_lefts: List[int] = []
-        edge_tops: List[int] = []
-        edge_rights: List[int] = []
-        edge_bottoms: List[int] = []
-        for ss in sample_starts:
-            if cancel_event and cancel_event.is_set():
-                raise RuntimeError("Autocrop cancelled by user.")
-
-            cmd = [
-                ffmpeg, "-hide_banner", "-nostdin",
-                "-ss", f"{max(0.0, ss):.3f}",
-                "-i", str(input_file),
-                "-t", "6",
-                "-an",
-                # cropdetect limit is a 0-1 fraction, not raw 0-255: this ffmpeg
-                # scales it to the source bit depth, so a literal 24 is far too
-                # strict on 10-bit HDR (black ≈ 64/1023) and misses letterboxing.
-                "-vf", "fps=2,cropdetect=limit=24/255:round=2:reset=0",
-                "-f", "null", "-",
-            ]
-            try:
-                res = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=120,
-                )
-                blob = (res.stderr or "") + "\n" + (res.stdout or "")
-            except Exception as e:
-                print(f"[!] Autocrop sample failed at {ss:.1f}s: {e}")
-                continue
-
-            for line in blob.splitlines():
-                m = crop_eq.search(line)
-                if not m:
-                    continue
-                w, h, x, y = (int(m.group("w")), int(m.group("h")), int(m.group("x")), int(m.group("y")))
-                if w < 16 or h < 16 or x < 0 or y < 0:
-                    continue
-                if x + w > src_w + 2 or y + h > src_h + 2:
-                    continue
-                edge_lefts.append(x)
-                edge_tops.append(y)
-                edge_rights.append(max(0, src_w - (x + w)))
-                edge_bottoms.append(max(0, src_h - (y + h)))
-
-        if not (edge_lefts and edge_tops and edge_rights and edge_bottoms):
-            if progress_cb:
-                progress_cb("Autocrop: no black bars detected.")
-            return {"left": 0, "top": 0, "right": 0, "bottom": 0}
-
-        # Smallest bar per edge wins (least crop): one bright frame that exposes a
-        # true picture edge vetoes every dark frame that saw a larger bar. A small
-        # variance tolerance snaps sub-VAR_TOL cropdetect jitter down first, so a
-        # 1px wobble across samples can't invent a distinct (smaller) edge.
-        VAR_TOL = 2
-
-        def least_edge(values: List[int]) -> int:
-            snapped = [max(0, v - (v % VAR_TOL)) for v in values]
-            return min(snapped)
-
-        left = least_edge(edge_lefts)
-        top = least_edge(edge_tops)
-        right = least_edge(edge_rights)
-        bottom = least_edge(edge_bottoms)
-
-        # Round odd values DOWN — crop less, never into picture — and keep even
-        # dimensions for YUV420 / AV1.
-        def even_down(v: int) -> int:
-            v = max(0, int(v))
-            return v - (v % 2)
-
-        left, top, right, bottom = map(even_down, (left, top, right, bottom))
-
-        # Ignore tiny noise crops (< 4px total per axis)
-        if left + right < 4:
-            left = right = 0
-        if top + bottom < 4:
-            top = bottom = 0
-
-        # Safety: don't crop away most of the frame
-        if (src_w - left - right) < src_w * 0.5 or (src_h - top - bottom) < src_h * 0.5:
-            if progress_cb:
-                progress_cb("Autocrop: rejected unsafe crop values.")
-            return {"left": 0, "top": 0, "right": 0, "bottom": 0}
-
-        crop = {"left": left, "top": top, "right": right, "bottom": bottom}
-        if progress_cb:
-            if any(crop.values()):
-                progress_cb(
-                    f"Autocrop: L{left} T{top} R{right} B{bottom} "
-                    f"→ {src_w - left - right}x{src_h - top - bottom}"
-                )
-            else:
-                progress_cb("Autocrop: no significant black bars.")
-        return crop
-
     def probe_media(self, file_path: Path, probe: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Returns structured metadata about video, audio, and subtitle streams.
         Pass probe= to reuse an existing ffprobe JSON dict.
@@ -756,32 +595,6 @@ class TranscodePipeline:
             if len(primary) == 3:
                 return primary
             return "und"
-
-    def iso639_2(self, lang: Optional[str], container: str = "mp4") -> str:
-        """
-        Container language tag — never leave a 2-letter code as "und".
-
-        MP4/ISOBMFF wants ISO 639-2/T (ces, deu, fra); the Matroska spec's
-        Language element wants the bibliographic form (cze, ger, fre), so WebM
-        output gets /B. Everything else keeps /T.
-        """
-        fam = self.lang_family(lang)
-        if fam and fam != "und":
-            return self._to_bibliographic(fam) if str(container).lower() in ("webm", "mkv", "matroska") else fam
-        raw = (lang or "und").strip().lower().split("-", 1)[0]
-        if len(raw) == 3:
-            return raw
-        return "und"
-
-    @staticmethod
-    def _to_bibliographic(alpha3_t: str) -> str:
-        """ISO 639-2/T → 639-2/B (ces→cze, deu→ger, …). Identity when they agree."""
-        try:
-            from langcodes import Language
-
-            return Language.get(alpha3_t).to_alpha3(variant="B") or alpha3_t
-        except Exception:
-            return _ISO639_2T_TO_B.get(alpha3_t, alpha3_t)
 
     def select_and_prioritize_audio(
         self,
@@ -893,171 +706,57 @@ class TranscodePipeline:
 
         return selected
 
-    def transcode_audio_tracks(
+    def run_handbrake_encode(
         self,
-        input_file: Path,
-        ordered_tracks: List[Dict[str, Any]],
-        job_temp_dir: Path,
-        progress_cb: Optional[Callable[[str], None]] = None,
-        cancel_event: Optional[threading.Event] = None
-    ) -> List[Dict[str, Any]]:
-        """Extracts and transcodes selected audio tracks (Opus or E-AC-3, sequential)."""
-        if not ordered_tracks:
-            return []
-
-        ffmpeg = str(self.bin_dir / "ffmpeg.exe")
-        total = len(ordered_tracks)
-        results: List[Optional[Dict[str, Any]]] = [None] * total
-
-        def encode_one(idx: int, track: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            if cancel_event and cancel_event.is_set():
-                return None
-
-            s_idx = track["stream_index"]
-            lang = track["language"]
-            fmt = normalize_audio_format(track.get("audio_format"))
-            codec = track.get("target_codec") or ("eac3" if fmt == "eac3" else "libopus")
-            ext = "eac3" if fmt == "eac3" else "opus"
-            codec_label = "E-AC-3" if fmt == "eac3" else "Opus"
-            out_file = job_temp_dir / f"audio_track_{idx}_{lang}.{ext}"
-
-            if progress_cb:
-                progress_cb(
-                    f"Transcoding audio track {idx+1}/{total} "
-                    f"({lang.upper()} {track['layout_desc']}) to {codec_label}..."
-                )
-
-            cmd = [
-                ffmpeg, "-y", "-hide_banner", "-nostdin",
-                "-i", str(input_file),
-                "-map", f"0:{s_idx}",
-                "-c:a", codec,
-                "-b:a", track["target_bitrate"],
-                "-ac", str(track["target_channels"]),
-            ]
-            if fmt == "opus":
-                cmd.extend(["-vbr", "on"])
-            cmd.append(str(out_file))
-
-            err_log = job_temp_dir / f"audio_track_{idx}_{lang}.ffmpeg.log"
-            returncode = self._run_to_log(cmd, err_log, cancel_event)
-            if returncode is None:
-                return None  # cancelled — outer loop treats this as a stop, not a failure
-            if returncode != 0:
-                tail = ""
-                try:
-                    tail = err_log.read_text(encoding="utf-8", errors="replace")[-800:]
-                except Exception:
-                    pass
-                print(f"[!] Warning: Failed to transcode audio stream {s_idx} (exit {returncode})")
-                if tail:
-                    print(tail)
-                return None
-
-            if not out_file.is_file() or out_file.stat().st_size < 64:
-                print(f"[!] Warning: Audio transcode produced empty/tiny file for stream {s_idx}")
-                return None
-
-            return {
-                "file": out_file,
-                "language": self.iso639_2(lang),
-                "channels": track["target_channels"],
-                "bitrate": track["target_bitrate"],
-                "audio_format": fmt,
-            }
-
-        # Sequential — concurrent ffmpeg reads of the same MKV are unsafe on Windows
-        failures: List[str] = []
-        for idx, track in enumerate(ordered_tracks):
-            if cancel_event and cancel_event.is_set():
-                break
-            result = encode_one(idx, track)
-            if result is None and not (cancel_event and cancel_event.is_set()):
-                failures.append(
-                    f"stream {track.get('stream_index')} ({track.get('language', '?')})"
-                )
-            results[idx] = result
-
-        if cancel_event and cancel_event.is_set():
-            raise RuntimeError("Audio transcode cancelled by user.")
-        if failures:
-            raise RuntimeError(
-                "Audio transcode failed for: " + ", ".join(failures)
-            )
-
-        return [r for r in results if r is not None]
-
-    def run_svt_encode(
-        self,
-        input_file: Path,
-        job_temp_dir: Path,
-        crf: float = 30.0,
-        preset: int = 4,
-        resolution_target: str = "source",
-        extra_svt_params: str = "",
-        hdr10plus_json: Optional[str] = None,
-        dolby_vision_rpu: Optional[str] = None,
-        crop: Optional[Dict[str, int]] = None,
+        cmd: List[str],
+        partial: Path,
+        log_file: Path,
         progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
         cancel_event: Optional[threading.Event] = None,
         pid_cb: Optional[Callable[[int], None]] = None,
     ) -> Path:
         """
-        Executes core/svt_encode.py (direct single-pass SVT-AV1-Tritium encode)
-        and monitors progress in real time. Returns path to the final IVF stream.
-
-        pid_cb, if given, is called with the spawned process's PID as soon as it
-        starts, so the caller can persist it onto the job record — that's what
-        lets a crash-recovery pass on the next startup find and kill this exact
-        process tree if the server dies mid-encode and orphans it.
+        Run a HandBrakeCLI command (core/handbrake_encode.build_handbrake_command)
+        that writes ``partial``. Progress comes from stdout's carriage-return
+        "Encoding: task …, N %" lines; HandBrake's activity log (stderr) goes to
+        log_file, and its tail is raised on failure. The caller verifies and
+        publishes the partial — on cancel or failure it is deleted here.
         """
-        script_path = CORE_DIR / "svt_encode.py"
-        python_bin = str(VENV_PYTHON)
+        from core.handbrake_encode import PROGRESS_RE
 
-        target_height = target_height_for(resolution_target)
+        partial = Path(partial)
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            partial.unlink(missing_ok=True)
+        except Exception:
+            pass
 
-        cmd = [
-            python_bin, str(script_path),
-            "-i", str(input_file),
-            "-t", str(job_temp_dir),
-            "--preset", str(preset),
-            "--crf", str(crf),
-            "--target-height", str(target_height)
-        ]
+        def _drop_partial():
+            # Windows can't delete a file HandBrake still has open — wait for
+            # the killed process to actually exit first
+            try:
+                process.wait(timeout=15)
+            except Exception:
+                pass
+            try:
+                partial.unlink(missing_ok=True)
+            except Exception:
+                pass
 
-        if crop and any(int(crop.get(k, 0) or 0) for k in ("left", "top", "right", "bottom")):
-            cmd.extend(["--crop", crop_to_csv(crop)])
-
-        if extra_svt_params:
-            cmd.extend(["--svt-params", extra_svt_params])
-        # Dedicated argv (not inside --svt-params) so spaces in paths survive
-        if hdr10plus_json:
-            cmd.extend(["--hdr10plus-json", str(hdr10plus_json)])
-        if dolby_vision_rpu:
-            cmd.extend(["--dolby-vision-rpu", str(dolby_vision_rpu)])
-
-        # Environment with bin/ and vs/ in path and UTF-8 encoding
-        env = os.environ.copy()
-        env["PATH"] = f"{self.bin_dir};{VS_DIR};{VS_DIR / 'plugins64'};{env.get('PATH', '')}"
-        env["PYTHONPATH"] = f"{VS_DIR};{CORE_DIR};{env.get('PYTHONPATH', '')}"
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-        # Disable Rich live redraws (they use \\r and deadlock piped stdout)
-        env["SVTENCODE_NONINTERACTIVE"] = "1"
-        env["TERM"] = "dumb"
-
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            # Binary mode + chunked drain: readline() deadlocks on Rich \\r updates
-            env=env,
-            bufsize=0,
-        )
+        log_fh = open(log_file, "w", encoding="utf-8", errors="replace")
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+            )
+        except Exception as e:
+            log_fh.close()
+            raise RuntimeError(f"Could not start HandBrakeCLI: {e}") from e
         self.current_process = process
         self._track_process(process)
-        # Opt encode worker out of Windows EcoQoS so SVT keeps all cores when
-        # the Studio / IDE window is unfocused (otherwise often ~4 threads).
         boost_process(process.pid)
         if pid_cb:
             try:
@@ -1065,120 +764,72 @@ class TranscodePipeline:
             except Exception:
                 pass
 
-        current_stage = "ENCODING"
-        stage_num = 1
-        output_error = []
-        line_buf = ""
-        recent_lines: List[str] = []
+        err_tail: List[str] = []
+        muxing = [False]
 
-        def handle_text(text: str) -> None:
-            nonlocal line_buf
-            # Normalize carriage-return progress redraws into line feeds
-            text = text.replace("\r\n", "\n").replace("\r", "\n")
-            line_buf += text
-            while "\n" in line_buf:
-                line_str, line_buf = line_buf.split("\n", 1)
-                line_str = line_str.strip()
-                if not line_str:
-                    continue
-
-                # Machine progress: __AV1Q_PROGRESS__ <label...> <pct> <fps> <done> <total>
-                if line_str.startswith("__AV1Q_PROGRESS__"):
-                    parts = line_str.split()
-                    # parts[0]=prefix, parts[1:-3]=label words, then pct fps done total
-                    if len(parts) >= 6 and progress_cb:
-                        try:
-                            pct = float(parts[-4])
-                            fps_v = float(parts[-3])
-                        except ValueError:
-                            continue
-                        progress_cb({
-                            "stage": current_stage,
-                            "stage_num": stage_num,
-                            "percent": pct,
-                            "fps": fps_v,
-                            "raw_log": "",  # UI-only — do not spam job log
-                        })
-                    continue
-
-                recent_lines.append(line_str)
-                if len(recent_lines) > 40:
-                    recent_lines.pop(0)
-
-                pct_match = re.search(r"(\d{1,3}(?:\.\d+)?)%", line_str)
-                fps_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:fps|FPS)", line_str, re.I)
-                percent = float(pct_match.group(1)) if pct_match else None
-                fps = float(fps_match.group(1)) if fps_match else None
-
-                if progress_cb:
-                    progress_cb({
-                        "stage": current_stage,
-                        "stage_num": stage_num,
-                        "percent": percent,
-                        "fps": fps,
-                        "raw_log": line_str
-                    })
+        def drain_stderr() -> None:
+            assert process.stderr is not None
+            for raw in iter(process.stderr.readline, b""):
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                log_fh.write(line + "\n")
+                if line:
+                    err_tail.append(line)
+                    if len(err_tail) > 40:
+                        err_tail.pop(0)
 
         def drain_stdout() -> None:
-            try:
-                assert process.stdout is not None
-                while True:
-                    chunk = process.stdout.read(4096)
-                    if not chunk:
-                        break
-                    handle_text(chunk.decode("utf-8", errors="replace"))
-            except Exception as e:
-                output_error.append(e)
+            assert process.stdout is not None
+            buf = ""
+            while True:
+                chunk = process.stdout.read(4096)
+                if not chunk:
+                    break
+                buf += chunk.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    line = line.strip()
+                    if not line or not progress_cb:
+                        continue
+                    m = PROGRESS_RE.search(line)
+                    if m:
+                        progress_cb({
+                            "percent": float(m.group(3)),
+                            "fps": float(m.group(4)) if m.group(4) else None,
+                            "raw_log": "",  # UI-only — do not spam job log
+                        })
+                    elif line.startswith("Muxing") and not muxing[0]:
+                        muxing[0] = True
+                        progress_cb({"percent": 100.0, "fps": None, "raw_log": "HandBrake: muxing output…"})
 
-        reader = threading.Thread(target=drain_stdout, daemon=True)
-        reader.start()
+        readers = [
+            threading.Thread(target=drain_stderr, daemon=True),
+            threading.Thread(target=drain_stdout, daemon=True),
+        ]
+        for t in readers:
+            t.start()
 
         try:
-            while True:
+            while process.poll() is None:
                 if cancel_event and cancel_event.is_set():
                     self.kill_all_processes()
+                    _drop_partial()
                     raise RuntimeError("Encode cancelled by user.")
-
-                if process.poll() is not None and not reader.is_alive():
-                    break
                 time.sleep(0.2)
-
-            reader.join(timeout=5)
-            if line_buf.strip():
-                handle_text("\n")
-
-            if output_error:
-                raise RuntimeError(f"Failed reading encode output: {output_error[0]}")
-
-            ret_code = process.poll()
-            if ret_code != 0:
-                if cancel_event and cancel_event.is_set():
-                    raise RuntimeError("Encode cancelled by user.")
-                tail = "\n".join(recent_lines[-12:]).strip()
-                detail = f"\nLast encoder output:\n{tail}" if tail else ""
-                raise RuntimeError(f"Encode failed with exit code {ret_code}.{detail}")
+            for t in readers:
+                t.join(timeout=5)
+            if cancel_event and cancel_event.is_set():
+                _drop_partial()
+                raise RuntimeError("Encode cancelled by user.")
+            if process.returncode != 0 or not partial.is_file() or partial.stat().st_size < 64:
+                _drop_partial()
+                tail = "\n".join(err_tail[-12:]).strip()
+                detail = f"\nLast HandBrake output:\n{tail}" if tail else ""
+                raise RuntimeError(f"HandBrakeCLI failed with exit code {process.returncode}.{detail}")
         finally:
             self._untrack_process(process)
             self.current_process = None
-
-        final_ivf = job_temp_dir / f"{input_file.stem}.ivf"
-        stray_ivf = input_file.parent / f"{input_file.stem}.ivf"
-        if not final_ivf.exists() and stray_ivf.exists():
-            # Legacy stray IVF left beside the source — adopt then prefer temp
-            try:
-                shutil.move(str(stray_ivf), str(final_ivf))
-            except Exception:
-                final_ivf = stray_ivf
-        elif final_ivf.exists() and stray_ivf.exists() and stray_ivf.resolve() != final_ivf.resolve():
-            try:
-                stray_ivf.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        if not final_ivf.exists():
-            raise FileNotFoundError(f"Encoded IVF file not found for {input_file.name}")
-
-        return final_ivf
+            log_fh.close()
+        return partial
 
     def measure_final_ssimu2(
         self,
@@ -1253,221 +904,6 @@ class TranscodePipeline:
                 f"{payload['frames']} frames, {payload['mode']})"
             )
         return payload
-
-    def mux_output(
-        self,
-        ivf_video: Path,
-        audio_files: List[Dict[str, Any]],
-        output_file: Path,
-        container: str = "mp4",
-        progress_cb: Optional[Callable[[str], None]] = None,
-        color_args: Optional[List[str]] = None,
-        hdr_input_args: Optional[List[str]] = None,
-        inject_dovi: bool = False,
-        cancel_event=None,
-    ) -> Path:
-        """
-        Mux AV1 video + Opus audio into MP4 (+faststart) or WebM.
-
-        Writes to ``*.partial.mp4`` / ``*.partial.webm`` first, then atomically
-        replaces the final path so a crash mid-mux never truncates an existing
-        good encode. (Must keep a real container extension — ffmpeg rejects
-        ``*.mp4.partial``.)
-
-        MP4 / WebM: ffmpeg stream-copy (+ optional HDR10 color BSF). A DoVi RPU
-        is already baked into the AV1 bitstream by SvtAv1EncApp before this step
-        ever runs, so mux must not touch the bitstream itself.
-
-        hdr_input_args (``-mastering_display`` / ``-content_light``) are ffmpeg
-        *input* options that make the muxer write the mdcv / clli container
-        metadata — the SVT flags only put it in the bitstream, and players that
-        read the container alone would otherwise see no HDR10 static metadata.
-
-        inject_dovi (MP4 only): ffmpeg cannot write the ``dvvC`` box from a raw
-        IVF, so core/mp4_dovi.py adds it afterwards. Without that box players
-        treat the file as plain HDR10 even though the RPU is in the stream.
-        """
-        fmt = "webm" if str(container).lower() == "webm" else "mp4"
-        ffmpeg = str(self.bin_dir / "ffmpeg.exe")
-        ffprobe = str(self.bin_dir / "ffprobe.exe")
-        output_file = Path(output_file)
-        if output_file.suffix.lower() != f".{fmt}":
-            output_file = output_file.with_suffix(f".{fmt}")
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # Never mux straight onto the deliverable path
-        # e.g. movie.mp4 -> movie.partial.mp4 (NOT movie.mp4.partial)
-        partial = output_file.with_name(f"{output_file.stem}.partial{output_file.suffix}")
-        try:
-            if partial.exists():
-                partial.unlink()
-        except Exception:
-            pass
-
-        if progress_cb:
-            if fmt == "webm":
-                progress_cb("Muxing final WebM container...")
-            else:
-                progress_cb("Muxing final Web-Optimized MP4 container...")
-
-        cmd = [ffmpeg, "-y"]
-        if hdr_input_args:
-            cmd.extend(list(hdr_input_args))
-        cmd.extend(["-i", str(ivf_video)])
-
-        for a in audio_files:
-            cmd.extend(["-i", str(a["file"])])
-
-        cmd.extend([
-            "-map", "0:v:0",
-            "-c:v", "copy"
-        ])
-        if color_args:
-            cmd.extend(list(color_args))
-
-        for idx, a in enumerate(audio_files):
-            lang = self.iso639_2(a.get("language"), container=fmt)
-            cmd.extend([
-                "-map", f"{idx+1}:a:0",
-                "-c:a", "copy",
-                f"-metadata:s:a:{idx}", f"language={lang}",
-            ])
-            if idx == 0:
-                cmd.extend([f"-disposition:a:{idx}", "default"])
-            else:
-                cmd.extend([f"-disposition:a:{idx}", "0"])
-
-        cmd.extend([
-            "-sn",
-            "-map_chapters", "-1",
-        ])
-        if fmt == "mp4":
-            cmd.extend(["-movflags", "+faststart", "-f", "mp4"])
-        else:
-            cmd.extend(["-f", "webm"])
-        cmd.append(str(partial))
-
-        # Tracked Popen (not subprocess.run) so Stop can kill an in-flight mux;
-        # a blocking run() here leaves the worker stuck for minutes on a large file.
-        # A cancel or a spawn/pipe error deletes the partial before raising.
-        def _drop_partial():
-            try:
-                partial.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        _out, mux_err, returncode = self._run_capture(
-            cmd,
-            cancel_event=cancel_event,
-            on_abort=_drop_partial,
-            cancel_msg="Muxing cancelled by user.",
-            fail_prefix="FFmpeg muxing failed",
-        )
-
-        if returncode != 0:
-            _drop_partial()
-            label = "WebM" if fmt == "webm" else "MP4"
-            raise RuntimeError(f"FFmpeg {label} muxing failed: {mux_err}")
-
-        if not partial.is_file() or partial.stat().st_size < 64:
-            try:
-                partial.unlink(missing_ok=True)
-            except Exception:
-                pass
-            raise RuntimeError("FFmpeg mux produced an empty or missing partial file")
-
-        # Dolby Vision container signalling (best-effort — a failure leaves a
-        # valid HDR10 file, same as the RPU passthrough itself)
-        if inject_dovi:
-            if fmt != "mp4":
-                if progress_cb:
-                    progress_cb("Dolby Vision RPU is in the stream, but WebM cannot signal it — HDR10 only")
-            else:
-                dv_partial = partial.with_name(f"{output_file.stem}.dvvc.partial.mp4")
-                try:
-                    dv_cfg = inject_dolby_vision(partial, dv_partial)
-                    if dv_cfg:
-                        os.replace(str(dv_partial), str(partial))
-                        if progress_cb:
-                            progress_cb(
-                                f"Dolby Vision signalled in MP4: profile {dv_cfg['profile']} "
-                                f"level {dv_cfg['level']} compat {dv_cfg['compat_id']} (dvvC + dby1)"
-                            )
-                    elif progress_cb:
-                        progress_cb("Dolby Vision dvvC box not written (unsupported MP4 layout) — HDR10 only")
-                except Exception as e:
-                    if progress_cb:
-                        progress_cb(f"Dolby Vision dvvC injection failed: {e} — HDR10 only")
-                finally:
-                    try:
-                        dv_partial.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-
-        # Confirm HDR10 color signaling landed (best-effort — never blocks publish)
-        probe_target = partial
-        if color_args:
-            try:
-                probe = subprocess.run(
-                    [
-                        ffprobe, "-v", "error",
-                        "-select_streams", "v:0",
-                        "-show_entries", "stream=color_primaries,color_transfer,color_space,color_range:stream_side_data",
-                        "-of", "json",
-                        str(probe_target),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                if probe.returncode == 0 and probe.stdout:
-                    streams = (json.loads(probe.stdout) or {}).get("streams") or []
-                    if streams:
-                        s0 = streams[0]
-                        dovi_side = None
-                        for sd in s0.get("side_data_list") or []:
-                            if sd.get("dv_profile") is not None or "DOVI" in str(sd.get("side_data_type") or "").upper():
-                                dovi_side = sd
-                                break
-                        prim = str(s0.get("color_primaries") or "")
-                        trc = str(s0.get("color_transfer") or "")
-                        if progress_cb:
-                            msg = (
-                                "Mux color probe: "
-                                f"primaries={prim or '?'} · "
-                                f"transfer={trc or '?'} · "
-                                f"space={s0.get('color_space') or '?'} · "
-                                f"range={s0.get('color_range') or '?'}"
-                            )
-                            if dovi_side is not None:
-                                msg += (
-                                    f" · DoVi P{dovi_side.get('dv_profile', '?')}."
-                                    f"{dovi_side.get('dv_level', '?')}"
-                                )
-                            progress_cb(msg)
-                        if color_args and not (prim and trc):
-                            if progress_cb:
-                                progress_cb(
-                                    "WARNING: Mux color tags missing after remux — check player HDR"
-                                )
-            except Exception as e:
-                if progress_cb:
-                    progress_cb(f"Mux color probe skipped: {e}")
-
-        # Atomic publish: existing final is replaced only after a complete partial
-        try:
-            os.replace(str(partial), str(output_file))
-        except Exception as e:
-            try:
-                partial.unlink(missing_ok=True)
-            except Exception:
-                pass
-            raise RuntimeError(f"Could not publish muxed file to {output_file}: {e}") from e
-
-        if progress_cb:
-            progress_cb(f"Published final: {output_file.name}")
-        return output_file
 
     def extract_subtitles_from_source(
         self,

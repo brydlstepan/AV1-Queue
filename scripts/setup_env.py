@@ -3,7 +3,6 @@ AV1 Queue Setup Script
 Downloads and configures all required binaries, VapourSynth plugins, and Python packages.
 """
 
-import os
 import sys
 import shutil
 import zipfile
@@ -86,168 +85,76 @@ def get_latest_github_release(repo: str):
         return json.loads(response.read().decode("utf-8"))
 
 
+HANDBRAKE_TRITIUM_REPO = "Uranite/HandBrake-SVT-AV1-Tritium"
+
+
+def install_handbrake_cli(hb_dir: Path) -> None:
+    """HandBrakeCLI-*-win-x86_64.zip from the repo's rolling "win" release."""
+    import hashlib
+    import re
+
+    url = f"https://api.github.com/repos/{HANDBRAKE_TRITIUM_REPO}/releases/tags/win"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req) as response:
+        rel = json.loads(response.read().decode("utf-8"))
+    assets = {a.get("name") or "": a.get("browser_download_url") for a in rel.get("assets", [])}
+    zip_name = next((n for n in assets if re.fullmatch(r"HandBrakeCLI-.*-win-x86_64\.zip", n)), None)
+    if not zip_name:
+        raise RuntimeError("no HandBrakeCLI x86_64 zip in the release")
+    if "sha256.txt" not in assets:
+        raise RuntimeError("release has no sha256.txt to verify against")
+
+    sums_req = urllib.request.Request(assets["sha256.txt"], headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(sums_req) as response:
+        sums = response.read().decode("utf-8", "replace")
+    expected = next(
+        (line.split()[0].lower() for line in sums.splitlines()
+         if len(line.split()) == 2 and line.split()[1] == zip_name),
+        None,
+    )
+    if not expected:
+        raise RuntimeError(f"{zip_name} is not listed in sha256.txt")
+
+    zip_dest = TEMP_DIR / "handbrake_cli.zip"
+    download_file(assets[zip_name], zip_dest, f"HandBrakeCLI ({zip_name})")
+    actual = hashlib.sha256(zip_dest.read_bytes()).hexdigest()
+    if actual != expected:
+        zip_dest.unlink(missing_ok=True)
+        raise RuntimeError(f"checksum mismatch for {zip_name}")
+
+    extracted = TEMP_DIR / "handbrake_cli_extracted"
+    extract_zip(zip_dest, extracted)
+    exe = next(extracted.glob("**/HandBrakeCLI.exe"), None)
+    if exe is None:
+        raise RuntimeError("HandBrakeCLI.exe not found inside the zip")
+    hb_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(exe, hb_dir / "HandBrakeCLI.exe")
+    for doc in ("COPYING", "LICENSE"):
+        for f in extracted.glob(f"**/{doc}"):
+            shutil.copy2(f, hb_dir / doc)
+            break
+    print(f"    Installed HandBrakeCLI: {hb_dir / 'HandBrakeCLI.exe'} (sha256 verified)")
+
+
 def setup_binaries() -> None:
     print("=" * 60)
-    print("STEP 1: Setting up Core Binaries (SVT-AV1-Tritium, FFmpeg, hdr10plus_tool, dovi_tool)")
+    print("STEP 1: Setting up Core Binaries (HandBrakeCLI with SVT-AV1-Tritium, FFmpeg)")
     print("=" * 60)
 
-    # 1. SVT-AV1-Tritium — vendored bin/svt/ is the normal path; download only if missing.
-    svt_variants_dir = BIN_DIR / "svt"
-    have_vendored_variants = svt_variants_dir.is_dir() and any(
-        svt_variants_dir.glob("SvtAv1EncApp-*.exe")
-    )
-    svt_exe = BIN_DIR / "SvtAv1EncApp.exe"
-    if have_vendored_variants:
-        print("    SVT-AV1-Tritium: using vendored bin/svt/ variants (HDR10+ OK).")
-    elif not svt_exe.exists():
-        print(
-            "[!] bin/svt/ variants are missing (unexpected — they should be tracked "
-            "in git). Falling back to a direct download from the latest GitHub Release."
-        )
-        override = os.environ.get("SVT_TRITIUM_URL", "").strip()
-        asset_url = None
-        picked = ""
-        target_name = None
-        if override:
-            asset_url, picked = override, "SVT_TRITIUM_URL override"
-        else:
-            try:
-                rel = get_latest_github_release("Uranite/svt-av1-tritium")
-            except Exception as e:
-                note_error(f"Could not query SVT-AV1-Tritium releases: {e}")
-                rel = {"assets": []}
-            v3_asset = plain_asset = None
-            for a in rel.get("assets", []):
-                name = a.get("name") or ""
-                low = name.lower()
-                if not ("windows" in low and "znver2" in low):
-                    continue
-                url = a["browser_download_url"]
-                if "v3" in low:
-                    v3_asset = v3_asset or (url, name)
-                else:
-                    plain_asset = plain_asset or (url, name)
-            if v3_asset:
-                asset_url, picked = v3_asset[0], f"Windows x86-64-v3+znver2 build ({v3_asset[1]})"
-                target_name = "SvtAv1EncApp-x86-64-v3-znver2.exe"
-            elif plain_asset:
-                asset_url, picked = plain_asset[0], f"Windows znver2 build ({plain_asset[1]})"
-                target_name = "SvtAv1EncApp-znver2.exe"
-        if asset_url:
-            try:
-                archive_dest = TEMP_DIR / "svt_tritium.tar.xz"
-                download_file(asset_url, archive_dest, f"SVT-AV1-Tritium — {picked}")
-                extract_dir = fresh_dir(TEMP_DIR / "svt_tritium_extracted")
-                import tarfile
-
-                with tarfile.open(archive_dest, mode="r:xz") as tf:
-                    tf.extractall(extract_dir)
-                found_exe = next(extract_dir.glob("**/SvtAv1EncApp.exe"), None)
-                if found_exe:
-                    svt_variants_dir.mkdir(parents=True, exist_ok=True)
-                    dest_name = target_name or "SvtAv1EncApp-znver2.exe"
-                    shutil.copy2(found_exe, svt_variants_dir / dest_name)
-                    shutil.copy2(found_exe, svt_exe)
-                    print(f"    Installed SVT-AV1-Tritium: bin/svt/{dest_name}")
-                else:
-                    note_error("SVT-AV1-Tritium archive downloaded but SvtAv1EncApp.exe not found inside.")
-            except Exception as e:
-                note_error(
-                    f"Failed to download/extract SVT-AV1-Tritium ({e}). "
-                    "Download manually: https://github.com/Uranite/svt-av1-tritium/releases"
-                )
-        else:
-            note_error(
-                "Could not find a Windows release asset for SVT-AV1-Tritium. "
-                "https://github.com/Uranite/svt-av1-tritium/releases"
-            )
-
-        if svt_exe.exists():
-            try:
-                r = subprocess.run(
-                    [str(svt_exe), "--help"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                blob = ((r.stdout or "") + "\n" + (r.stderr or "")).lower()
-                has_h10p = "--hdr10plus-json" in blob
-            except Exception as e:
-                note_warning(f"Could not probe SVT capabilities: {e}")
-                has_h10p = False
-            if has_h10p:
-                print("    SVT-AV1-Tritium supports --hdr10plus-json (HDR10+ passthrough OK).")
-            else:
-                note_warning(
-                    "Installed SVT-AV1-Tritium has NO --hdr10plus-json — HDR10+ "
-                    "passthrough will silently degrade to HDR10."
-                )
-
-    # 2. hdr10plus_tool
-    hdr10plus_exe = BIN_DIR / "hdr10plus_tool.exe"
-    if not hdr10plus_exe.exists():
+    # 1. HandBrakeCLI built with SVT-AV1-Tritium — the encoder
+    # (core/handbrake_encode.py). A snapshot build under the rolling "win"
+    # tag, checked against the release's sha256.txt. Delete bin/handbrake/
+    # to pick up a newer snapshot.
+    hb_dir = BIN_DIR / "handbrake"
+    hb_exe = hb_dir / "HandBrakeCLI.exe"
+    if not hb_exe.exists():
         try:
-            rel = get_latest_github_release("quietvoid/hdr10plus_tool")
+            install_handbrake_cli(hb_dir)
         except Exception as e:
-            note_error(f"Could not query hdr10plus_tool releases: {e}")
-            rel = {"assets": []}
-        asset_url = None
-        for a in rel.get("assets", []):
-            name = a.get("name") or ""
-            if "x86_64-pc-windows-msvc.zip" in name:
-                asset_url = a["browser_download_url"]
-                break
-        if asset_url:
-            try:
-                zip_dest = TEMP_DIR / "hdr10plus_tool.zip"
-                download_file(asset_url, zip_dest, "hdr10plus_tool")
-                extract_zip(zip_dest, TEMP_DIR / "hdr10plus_extracted")
-                for f in (TEMP_DIR / "hdr10plus_extracted").glob("**/hdr10plus_tool.exe"):
-                    shutil.copy2(f, hdr10plus_exe)
-                    break
-                if hdr10plus_exe.exists():
-                    print(f"    Installed hdr10plus_tool: {hdr10plus_exe}")
-                else:
-                    note_error("hdr10plus_tool zip downloaded but exe not found inside.")
-            except Exception as e:
-                note_error(f"Failed to install hdr10plus_tool: {e}")
-        else:
-            note_error("Could not find Windows release for hdr10plus_tool.")
+            note_error(f"Failed to install HandBrakeCLI: {e}")
 
-    # 2b. dovi_tool — optional, only used when "Preserve Dolby Vision RPU" is
-    # enabled in Settings (see README.md "HDR & Dolby Vision"). Missing this
-    # binary never fails setup; it just leaves that toggle non-functional.
-    dovi_tool_exe = BIN_DIR / "dovi_tool.exe"
-    if not dovi_tool_exe.exists():
-        try:
-            rel = get_latest_github_release("quietvoid/dovi_tool")
-        except Exception as e:
-            note_error(f"Could not query dovi_tool releases: {e}")
-            rel = {"assets": []}
-        asset_url = None
-        for a in rel.get("assets", []):
-            name = a.get("name") or ""
-            if "x86_64-pc-windows-msvc.zip" in name:
-                asset_url = a["browser_download_url"]
-                break
-        if asset_url:
-            try:
-                zip_dest = TEMP_DIR / "dovi_tool.zip"
-                download_file(asset_url, zip_dest, "dovi_tool")
-                extract_zip(zip_dest, TEMP_DIR / "dovi_tool_extracted")
-                for f in (TEMP_DIR / "dovi_tool_extracted").glob("**/dovi_tool.exe"):
-                    shutil.copy2(f, dovi_tool_exe)
-                    break
-                if dovi_tool_exe.exists():
-                    print(f"    Installed dovi_tool: {dovi_tool_exe}")
-                else:
-                    note_error("dovi_tool zip downloaded but exe not found inside.")
-            except Exception as e:
-                note_error(f"Failed to install dovi_tool: {e}")
-        else:
-            note_error("Could not find Windows release for dovi_tool.")
-
-    # 3. FFmpeg & FFprobe (GyanD Essentials)
+    # 2. FFmpeg & FFprobe (GyanD Essentials) — probe, test-mode segments,
+    # subtitle extraction
     ffmpeg_exe = BIN_DIR / "ffmpeg.exe"
     ffprobe_exe = BIN_DIR / "ffprobe.exe"
     if not ffmpeg_exe.exists() or not ffprobe_exe.exists():
@@ -385,7 +292,7 @@ def setup_vapoursynth_plugins() -> None:
         except Exception as e:
             note_warning(f"Could not download Vship NVIDIA: {e}")
 
-    # 3. FFMS2 — required for encode source load
+    # 3. FFMS2 — source filter for SSIMU2 scoring
     if not (autoload_dir / "ffms2.dll").exists():
         url = "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
         dest_7z = TEMP_DIR / "ffms2.7z"
@@ -419,22 +326,16 @@ def verify_required() -> None:
     required = [
         (BIN_DIR / "ffmpeg.exe", "bin/ffmpeg.exe"),
         (BIN_DIR / "ffprobe.exe", "bin/ffprobe.exe"),
-        (BIN_DIR / "hdr10plus_tool.exe", "bin/hdr10plus_tool.exe"),
+        (BIN_DIR / "handbrake" / "HandBrakeCLI.exe", "bin/handbrake/HandBrakeCLI.exe"),
         (VENV_DIR / "Scripts" / "python.exe", "vs/python-env (Python venv)"),
     ]
     for path, label in required:
         if not path.exists():
             note_error(f"Missing required component: {label}")
 
-    svt_ok = (BIN_DIR / "SvtAv1EncApp.exe").exists() or any(
-        (BIN_DIR / "svt").glob("SvtAv1EncApp-*.exe")
-    )
-    if not svt_ok:
-        note_error("Missing required component: SVT-AV1-Tritium (bin/svt/*.exe or bin/SvtAv1EncApp.exe)")
-
     ffms2 = VENV_DIR / "Lib" / "site-packages" / "vapoursynth" / "plugins" / "ffms2.dll"
     if not ffms2.exists():
-        note_error("Missing required component: ffms2.dll (VapourSynth source filter)")
+        note_warning("ffms2.dll (VapourSynth source filter) is missing — SSIMU2 scoring won't work")
 
 
 if __name__ == "__main__":

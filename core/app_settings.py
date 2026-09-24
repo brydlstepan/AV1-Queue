@@ -34,7 +34,6 @@ _DEFAULTS: Dict[str, Any] = {
     "svt_lp": 0,
     "svt_low_memory": False,
     "ssimu2_target": 80.0,
-    "hdr_strict": True,
     "preserve_dovi_rpu": True,
     "tmdb_lookup": True,
     "tmdb_api_key": "",

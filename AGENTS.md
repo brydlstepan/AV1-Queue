@@ -4,7 +4,7 @@ Guidance for AI agents working in this repository. Prefer this file over re-deri
 
 ## What this project is
 
-Local **Windows** AV1 encoding queue with a browser UI. It wraps **SVT-AV1-Tritium** direct **single-pass** encoding in a FastAPI backend plus a vanilla dark web frontend for batch jobs, presets, audio selection, HDR/DoVi handling, and live progress.
+Local **Windows** AV1 encoding queue with a browser UI. It drives **HandBrakeCLI built with SVT-AV1-Tritium** (**single-pass**) from a FastAPI backend plus a vanilla dark web frontend for batch jobs, presets, audio selection, HDR/DoVi handling, and live progress.
 
 Target use: a Jellyfin library optimized for **direct-play** (AV1 + MP4 + Opus). Video transcode avoidance is the design goal; rare audio-only Jellyfin transcodes are acceptable.
 
@@ -15,11 +15,11 @@ Target use: a Jellyfin library optimized for **direct-play** (AV1 + MP4 + Opus).
 | UI | `server/static/` — HTML / CSS / JS, **no build step** |
 | API | `server/app.py` — FastAPI + Uvicorn, REST + WebSocket `/ws/live` |
 | Queue / orchestration | `core/queue_manager.py` |
-| Encode | `core/svt_encode.py` → **SvtAv1EncApp** (SVT-AV1-Tritium) |
-| Pipeline (probe, audio, mux, cleanup) | `core/pipeline.py` |
-| HDR / Dolby Vision | `core/hdr_dovi.py` |
-| Binaries | `bin/` (ffmpeg, ffprobe, hdr10plus_tool, dovi_tool, SVT under `bin/svt/`) |
-| VapourSynth env | `vs/` (created by setup; plugins autoload from the venv, copies also in `vs/plugins64/`) |
+| Encode | `core/handbrake_encode.py` (command) + `pipeline.run_handbrake_encode` → **HandBrakeCLI** with SVT-AV1-Tritium (`bin/handbrake/`) — encode, HDR10+ / DoVi passthrough, audio, mux |
+| Pipeline (probe, audio selection, test segment, HandBrake runner, SSIMU2, cleanup) | `core/pipeline.py` |
+| HDR / Dolby Vision detection | `core/hdr_dovi.py` (skip policy, output naming, post-encode check) |
+| Binaries | `bin/` (ffmpeg, ffprobe; HandBrakeCLI under `bin/handbrake/`, SHA-256-verified snapshot from setup) |
+| VapourSynth env | `vs/` (created by setup; only used for SSIMU2 — plugins autoload from the venv, copies also in `vs/plugins64/`) |
 
 Python packages live in `vs/python-env/` after `setup.bat` / `.\scripts\setup.ps1`.
 
@@ -27,17 +27,19 @@ Python packages live in `vs/python-env/` after `setup.bat` / `.\scripts\setup.ps
 
 Single-pass only — **no** fast pass, metrics-driven CRF zones, or multi-pass AV1 workflow.
 
-1. **Audio** — Selected tracks → Opus by default (`eac3` per preset), or video-only
-2. **Encode** — VapourSynth (ffms2) load → optional crop/resize → pipe to SvtAv1EncApp (`--preset` / `--crf` / `--svt-params`)
-3. **Mux** — IVF + audio → MP4 (`+faststart`) or WebM
+1. **Prepare** — HDR/DoVi analysis (skip / quarantine policy), audio selection, test segment — `core/queue_manager.py` / `core/pipeline.py`
+2. **Encode** — HandBrakeCLI: autocrop (`--crop-mode conservative --previews 30:0`, applied crop parsed back from its log for SSIMU2), `--maxHeight` + `--loose-anamorphic` (never HandBrake's default auto anamorphic — it stretches pixels instead of scaling width), `svt_av1_10bit` with `--encoder-preset` / `-q`, preset `svt_params` as `-x`, `--hdr-dynamic-metadata`, audio → Opus (`eac3` per preset), MP4 (`-O`) or WebM
+3. **Verify & publish** — `*.partial.<ext>` → HDR check → rename into place
 4. **Subtitles (optional)** — Extract from **original** beside the source; background thread so the next job can start
-5. **SSIMU2 (optional)** — Post-mux score via Vship (GPU) or vszip (CPU)
+5. **SSIMU2 (optional)** — Post-encode score via Vship (GPU) or vszip (CPU)
+
+The app decides *what* to encode (policy, tracks, target size); HandBrake does crop detection, the encode and all HDR metadata handling. Don't reintroduce a parallel encode stack.
 
 ## Format & HDR invariants (do not casually change)
 
 These are product decisions, not preferences:
 
-- **Video:** AV1 via SVT-AV1-Tritium
+- **Video:** AV1 via SVT-AV1-Tritium, run through HandBrakeCLI
 - **Container default:** MP4 (browser + native direct-play). WebM is an option; do not push MKV as the library default
 - **Audio default:** Opus (5.1 / stereo). `audio_format` may be `eac3` per preset for AVR bitstream setups
 - Encode only if the source **base layer stands alone**:
@@ -45,9 +47,10 @@ These are product decisions, not preferences:
   - DoVi **P4** → **quarantine** for manual review
   - Filename says DoVi but probe did **not** confirm DoVi side_data → **quarantine**
   - Confirmed DoVi with unknown profile/compat (not P7/P8) → **quarantine**
-  - DoVi P7 / P8.1 → always encode base as HDR10; RPU is passed through via `dovi_tool` + Tritium `--dolby-vision-rpu` by default (**Settings → Preserve Dolby Vision RPU**, best-effort — never blocks a job; toggle off to always discard it)
-  - HDR10+ → passthrough via `hdr10plus_tool` JSON + Tritium `--hdr10plus-json` (both required)
-- Chapters/subtitles are stripped from the muxed output (sidecars are separate)
+  - DoVi P7 / P8.1 → always encode base as HDR10; HandBrake carries the RPU by default (`--hdr-dynamic-metadata all`, P7 → 8.1; **Settings → Preserve Dolby Vision RPU**, best-effort — never blocks a job; toggle off to always discard it)
+  - HDR10+ → HandBrake passthrough (not verifiable afterwards — bundled ffprobe can't read AV1 frame metadata)
+  - HDR source whose output isn't HDR → output discarded, job fails
+- Chapters/subtitles are stripped from the output; audio tracks are left unnamed (sidecars are separate)
 
 Full tables and rationale: README → *Format philosophy* → *HDR & Dolby Vision*.
 
@@ -89,12 +92,12 @@ Useful API: `/api/queue`, `/api/queue/add`, `/api/queue/update`, `/api/queue/req
 - **Platform:** Windows x64 assumptions in scripts and portable VS layout — keep PowerShell / path handling compatible
 - **UI changes:** edit `server/static/*` and refresh; no bundler
 - **Presets:** builtin JSON under `server/presets/builtin/` are shared defaults; local presets are machine-only
-- **SVT overrides:** non-defaults go through preset `svt_params` → `--svt-params` in `core/svt_encode.py`
+- **SVT overrides:** non-defaults go through preset `svt_params` → HandBrake `-x key=value:…` in `core/handbrake_encode.py`
 - Prefer extending existing `core/` modules over adding parallel encode stacks
 
 ## When changing behavior
 
-1. Preserve single-pass Tritium encode and the HDR skip/passthrough rules above unless the user explicitly redesigns them
+1. Preserve the single-pass HandBrake/Tritium encode and the HDR skip/passthrough rules above unless the user explicitly redesigns them
 2. Update README sections that document user-facing behavior when you change pipeline/format/HDR semantics
 3. Keep agent instructions here short; put long rationale in the README
 

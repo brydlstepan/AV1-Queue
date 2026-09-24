@@ -120,14 +120,14 @@ document.addEventListener("DOMContentLoaded", () => {
   //    or multi-pass only — this app always runs single-pass CRF.
   //  - width/height/forced-max-*, frames, skip, nb, color-format, profile,
   //    level, fps-num/-denom, input-depth, inj, inj-frm-rt, enable-stat-report,
-  //    asm: inferred from the VapourSynth pipe / not meaningful to override here.
+  //    asm: set by HandBrake from the decoded source / not meaningful to override here.
   //  - color-primaries, transfer-characteristics, matrix-coefficients,
   //    color-range, chroma-sample-position, mastering-display, content-light,
-  //    dolby-vision-rpu, hdr10plus-json: computed by core/hdr_dovi.py from the
+  //    dolby-vision-rpu, hdr10plus-json: set by HandBrake from the
   //    probed source — hand-overriding these would fight the HDR pipeline.
   //  - i/input, output, config, errlog, recon, stat-file, progress,
   //    no-progress, hide-banner, help, color-help, version, svtav1-params:
-  //    owned by core/svt_encode.py's own invocation, not user-facing knobs.
+  //    owned by the encoder invocation (core/handbrake_encode.py), not user-facing knobs.
   const ESSENTIAL_SVT_SETTINGS = [
     // Film Grain & Noise — AV1 film-grain signaling first, then the independent
     // noise-table family, then RD/filter noise adaptation.
@@ -944,7 +944,6 @@ document.addEventListener("DOMContentLoaded", () => {
     svt_low_memory: false,
     ssimu2_target: 80,
     tmdb_lookup: true,
-    hdr_strict: true,
     preserve_dovi_rpu: true,
     tmdb_api_key: "",
     subtitle_search: false,
@@ -994,11 +993,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (subSearch) {
       setPipelineToggle(subSearch, !!appSettings.subtitle_search);
       syncPipelineFieldRow(subSearch);
-    }
-    const hdrStrict = document.getElementById("globalHdrStrict");
-    if (hdrStrict) {
-      setPipelineToggle(hdrStrict, appSettings.hdr_strict !== false);
-      syncPipelineFieldRow(hdrStrict);
     }
     const preserveDoviRpu = document.getElementById("globalPreserveDoviRpu");
     if (preserveDoviRpu) {
@@ -1200,7 +1194,6 @@ document.addEventListener("DOMContentLoaded", () => {
       svt_low_memory: toggleOn("globalSvtLowMemory"),
       ssimu2_target: ssimu2Target,
       tmdb_lookup: toggleOn("globalTmdbLookup"),
-      hdr_strict: toggleOn("globalHdrStrict"),
       preserve_dovi_rpu: toggleOn("globalPreserveDoviRpu"),
       subtitle_search: toggleOn("globalSubtitleSearch"),
       tmdb_api_key: document.getElementById("settingsTmdbApiKey")?.value || "",
@@ -1313,7 +1306,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   wireSettingsToggle(document.getElementById("globalTmdbLookup"));
-  wireSettingsToggle(document.getElementById("globalHdrStrict"));
   wireSettingsToggle(document.getElementById("globalPreserveDoviRpu"));
   wireSettingsToggle(document.getElementById("globalSubtitleSearch"));
   wireSettingsToggle(document.getElementById("globalSvtLowMemory"));
@@ -1929,12 +1921,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (audioStereo !== "160k") lines.push(`audio stereo bitrate: ${audioStereo}`);
 
     const svt = collectSvtOverrides();
-    const svtFlags = Object.keys(svt)
+    const svtOpts = Object.keys(svt)
       .sort()
-      .map(k => `--${k} ${svt[k]}`);
-    if (svtFlags.length) {
-      lines.push(`--svt-params:`);
-      svtFlags.forEach(f => lines.push(`  ${f}`));
+      .map(k => `${k}=${svt[k]}`);
+    if (svtOpts.length) {
+      lines.push(`encoder options (HandBrake -x):`);
+      svtOpts.forEach(f => lines.push(`  ${f}`));
     }
 
     if (!lines.length) {

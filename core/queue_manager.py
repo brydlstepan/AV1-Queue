@@ -10,17 +10,22 @@ import time
 import traceback
 import uuid
 import shutil
-import tempfile
+import subprocess
 import threading
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 
-from core.hdr_dovi import dovi_needs_81_conversion, ffmpeg_hdr_input_args, svt_chroma_flags
-from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format
+from core.handbrake_encode import (
+    build_handbrake_command,
+    handbrake_available,
+    hb_audio_track_numbers,
+    parse_applied_crop,
+)
+from core.hdr_dovi import svt_chroma_flags
+from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format, target_height_for
 from core.app_settings import load_settings, JOB_CONFIG_DEFAULTS
 from core.media_tagging import build_media_tag, library_output_path, refresh_media_tag_quality
 from core.subtitle_search import search_and_download_missing
-from core.svt_binary import get_svt_status
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SERVER_DIR = BASE_DIR / "server"
@@ -88,93 +93,6 @@ def allocate_unique_output_path(
                 return cand
     raise RuntimeError(f"Could not allocate unique output path near {path}")
 
-
-def _windows_short_path(path: Path) -> Path:
-    """8.3 short path when available — avoids spaces that break some native tools."""
-    try:
-        import ctypes
-        buf = ctypes.create_unicode_buffer(32768)
-        got = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, len(buf))
-        if got and buf.value:
-            return Path(buf.value)
-    except Exception:
-        pass
-    return path
-
-
-def stage_svt_meta_file(src: Path, job_id: str, filename: str) -> Path:
-    """
-    Copy RPU/HDR10+ JSON to a space-free temp location.
-    Project paths may contain spaces (e.g. '.git Projects'); SVT rejects those.
-    Returns the staged path (caller should clean via staged_meta_dirs / cleanup_staged_meta).
-    """
-    src = Path(src)
-    # Prefer OS temp (usually no spaces); fall back to drive root _av1q_meta;
-    # the system-drive root is a last-resort candidate that never depends on
-    # a (possibly space-containing) username/profile path.
-    system_drive = os.environ.get("SystemDrive", "C:")
-    candidates = [
-        Path(tempfile.gettempdir()) / "av1queue_meta" / job_id,
-        Path(src.drive + "\\") / "_av1q_meta" / job_id if getattr(src, "drive", None) else None,
-        Path(system_drive + "\\") / "_av1q_meta" / job_id,
-    ]
-    dest_dir = None
-    for c in candidates:
-        if c is None:
-            continue
-        if " " in str(c):
-            continue
-        dest_dir = c
-        break
-    if dest_dir is None:
-        dest_dir = Path(tempfile.gettempdir()) / "av1queue_meta" / job_id
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / filename
-    shutil.copy2(src, dest)
-    if " " in str(dest):
-        short = _windows_short_path(dest)
-        if " " not in str(short):
-            dest = short
-        else:
-            # 8.3 short names are disabled on this volume — GetShortPathNameW
-            # just echoes the long path back with no error. Relocate to the
-            # system-drive root, which never depends on a (possibly
-            # space-containing) username/profile path.
-            safe_dir = Path(system_drive + "\\") / "_av1q_meta" / job_id
-            safe_dir.mkdir(parents=True, exist_ok=True)
-            safe_dest = safe_dir / filename
-            os.replace(dest, safe_dest)
-            dest = safe_dest
-    if " " in str(dest):
-        raise RuntimeError(f"Could not stage a space-free path for {filename} (got {dest})")
-    return dest
-
-
-def cleanup_staged_meta(job_id: str, staged_paths: Optional[List[str]] = None) -> None:
-    """Remove staged RPU/JSON dirs for this job (temp root + parents of staged files)."""
-    roots = [Path(tempfile.gettempdir()) / "av1queue_meta" / job_id]
-    if staged_paths:
-        for sp in staged_paths:
-            try:
-                p = Path(sp)
-                if p.is_file() or p.is_dir():
-                    roots.append(p.parent if p.is_file() else p)
-            except Exception:
-                pass
-    seen = set()
-    for root in roots:
-        try:
-            key = str(root.resolve()).lower()
-        except Exception:
-            key = str(root).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            if root.is_dir():
-                shutil.rmtree(root, ignore_errors=True)
-        except Exception:
-            pass
 
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -247,38 +165,6 @@ def default_output_path(input_path: str, config: Optional[Dict[str, Any]] = None
     return str(inp.parent / f"{inp.stem}_av1_boost.{ext}")
 
 
-def hdr_metadata_blockers(
-    hdr_analysis: Dict[str, Any],
-    svt_caps: Dict[str, Any],
-    bin_dir: Path,
-) -> List[str]:
-    """
-    Reasons the source's dynamic HDR metadata could not survive this encode.
-
-    Only *probe-confirmed* layers are considered. A filename hint is not proof
-    that the source carries anything, so it must never fail a job — it only ever
-    triggers a best-effort extraction attempt.
-    """
-    reasons: List[str] = []
-    bin_dir = Path(bin_dir)
-    if hdr_analysis.get("is_hdr10plus"):
-        if not svt_caps.get("hdr10plus_json"):
-            reasons.append(
-                "source is HDR10+, but this SVT-AV1-Tritium binary has no "
-                "--hdr10plus-json (needs a libhdr10plus-enabled build)"
-            )
-        if not (bin_dir / "hdr10plus_tool.exe").is_file():
-            reasons.append("source is HDR10+, but bin/hdr10plus_tool.exe is missing")
-    return reasons
-
-
-HDR_STRICT_HINT = (
-    "Install the missing dependency, or turn off "
-    "\"Fail when HDR metadata cannot be preserved\" in Settings "
-    "to encode this as plain HDR10."
-)
-
-
 class QueueManager:
     def __init__(self, pipeline: Optional[TranscodePipeline] = None):
         self.pipeline = pipeline or TranscodePipeline()
@@ -340,7 +226,7 @@ class QueueManager:
         Persist the active encoder subprocess PID on the job record.
         If the server process dies mid-encode (crash, force-kill), this is the
         only way a later _recover_interrupted_jobs() pass can find and kill the
-        orphaned SvtAv1EncApp/svt_encode.py process tree it left running
+        orphaned HandBrakeCLI process tree it left running
         — otherwise it keeps consuming CPU cores indefinitely, invisible to the
         app, and silently competes with whatever job runs next.
         """
@@ -971,6 +857,160 @@ class QueueManager:
         self._archive_job_to_history(job, job_id)
         print(f"[!] Job {job_id} failed: {error}")
 
+    def _encode_with_handbrake(
+        self,
+        job: Dict[str, Any],
+        job_id: str,
+        cfg: Dict[str, Any],
+        encode_input: Path,
+        out_path: Path,
+        seg_media: Optional[Dict[str, Any]],
+        ordered_audio: List[Dict[str, Any]],
+        autocrop: bool,
+        hdr_analysis: Dict[str, Any],
+        svt_params: Dict[str, Any],
+        settings_live: Dict[str, Any],
+        encode_temp_dir: Path,
+        encode_cb,
+        append_log,
+    ) -> Tuple[Path, Optional[Dict[str, int]]]:
+        """
+        HandBrakeCLI encode + audio + mux (core/handbrake_encode.py)
+        straight to ``*.partial.<ext>`` beside the deliverable, then check the
+        output kept the source's HDR signalling before publishing it.
+
+        Returns (published path, crop HandBrake applied). The crop is None when
+        autocrop was on but the applied crop couldn't be read from its log.
+        """
+        container = str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower()
+        container = "webm" if container == "webm" else "mp4"
+        out_path = Path(out_path)
+        if out_path.suffix.lower() != f".{container}":
+            out_path = out_path.with_suffix(f".{container}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Last-chance collision guard (file may have appeared since job was queued)
+        with self._lock:
+            reserved = self._reserved_output_paths(exclude_job_id=job_id)
+        safe_out = allocate_unique_output_path(out_path, reserved=reserved)
+        if safe_out.resolve() != out_path.resolve():
+            append_log(f"Output path already occupied — writing to {safe_out.name} instead", update_stage=False)
+            out_path = safe_out
+        if str(out_path) != job.get("output_path"):
+            job["output_path"] = str(out_path)
+            self.save_queue()
+            self.emit_event("job_update", job)
+        partial = out_path.with_name(f"{out_path.stem}.partial{out_path.suffix}")
+
+        hb_params = dict(svt_params)
+        # HandBrake leaves the AV1 chroma siting unset; take it from the source
+        chroma = svt_chroma_flags(hdr_analysis.get("chroma_location"))
+        if chroma:
+            hb_params.setdefault("chroma-sample-position", chroma[1])
+        preserve_dovi = bool(settings_live.get("preserve_dovi_rpu"))
+        all_audio = (seg_media or job.get("media_info") or {}).get("audio_tracks") or []
+        cmd = build_handbrake_command(
+            encode_input,
+            partial,
+            container=container,
+            crf=cfg.get("crf", JOB_CONFIG_DEFAULTS["crf"]),
+            preset=cfg.get("preset", JOB_CONFIG_DEFAULTS["preset"]),
+            svt_params=hb_params,
+            audio_tracks=ordered_audio,
+            audio_track_numbers=hb_audio_track_numbers(all_audio, ordered_audio),
+            autocrop=autocrop,
+            target_height=target_height_for(
+                cfg.get("resolution_target", JOB_CONFIG_DEFAULTS["resolution_target"])
+            ),
+            # P7 → 8.1 conversion and RPU crop correction are HandBrake's own
+            dynamic_metadata="all" if preserve_dovi else "hdr10plus",
+        )
+        append_log("HandBrakeCLI " + subprocess.list2cmdline(cmd[1:]), update_stage=False)
+
+        try:
+            self.pipeline.run_handbrake_encode(
+                cmd,
+                partial,
+                encode_temp_dir / "handbrake.log",
+                progress_cb=encode_cb,
+                cancel_event=self._cancel_event,
+                pid_cb=lambda pid: self._set_job_pid(job, pid),
+            )
+        except Exception:
+            self.pipeline.kill_all_processes()
+            raise
+        finally:
+            self._set_job_pid(job, None)
+        if self._cancel_event.is_set():
+            partial.unlink(missing_ok=True)
+            raise RuntimeError("Job cancelled.")
+
+        applied_crop: Optional[Dict[str, int]] = {"left": 0, "top": 0, "right": 0, "bottom": 0}
+        if autocrop:
+            try:
+                hb_log = (encode_temp_dir / "handbrake.log").read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                hb_log = ""
+            applied_crop = parse_applied_crop(hb_log)
+            if applied_crop is None:
+                append_log("Autocrop: couldn't read the crop HandBrake applied from its log", update_stage=False)
+            elif any(applied_crop.values()):
+                c = applied_crop
+                append_log(
+                    f"Autocrop (HandBrake): top {c['top']} · bottom {c['bottom']} · "
+                    f"left {c['left']} · right {c['right']}",
+                    update_stage=False,
+                )
+            else:
+                append_log("Autocrop (HandBrake): no black bars found", update_stage=False)
+
+        job["status"] = JobStatus.REMUXING
+        job["stage"] = "Verifying HandBrake output"
+        job["stage_num"] = 3
+        job["stage_percent"] = 0.0
+        job["progress"] = map_stage_progress(JobStatus.REMUXING)
+        self.save_queue()
+        self.emit_event("job_update", job)
+
+        try:
+            out_info = self.pipeline.hdr_processor.analyze_hdr_and_dovi(partial, encode_temp_dir)
+        except Exception as e:
+            out_info = None
+            append_log(f"Output HDR check skipped: {e}", update_stage=False)
+        if out_info is not None:
+            bits = ["HDR10" if out_info.get("is_hdr") else "SDR"]
+            if out_info.get("is_dovi"):
+                bits.append(f"DoVi profile {out_info.get('dovi_profile', '?')}")
+            if out_info.get("is_hdr10plus"):
+                bits.append("HDR10+")
+            append_log(f"Output check: {' · '.join(bits)}", update_stage=False)
+
+            src_hdr = bool(hdr_analysis.get("is_hdr") or hdr_analysis.get("is_dovi"))
+            if src_hdr and not out_info.get("is_hdr"):
+                partial.unlink(missing_ok=True)
+                raise RuntimeError("HandBrake output lost the source's HDR signalling — output discarded.")
+            if hdr_analysis.get("is_dovi") and preserve_dovi and not out_info.get("is_dovi"):
+                append_log(
+                    "WARNING: Dolby Vision not signalled in the output — HDR10 only "
+                    "(RPU passthrough is best-effort)",
+                    update_stage=False,
+                )
+            if hdr_analysis.get("is_hdr10plus") and not out_info.get("is_hdr10plus"):
+                # ffprobe here can't read AV1 frame metadata, so absence isn't proof
+                append_log(
+                    "HDR10+ passed to HandBrake (--hdr-dynamic-metadata); not "
+                    "independently confirmed in the AV1 output",
+                    update_stage=False,
+                )
+
+        try:
+            os.replace(str(partial), str(out_path))
+        except Exception as e:
+            partial.unlink(missing_ok=True)
+            raise RuntimeError(f"Could not publish HandBrake output to {out_path}: {e}") from e
+        append_log(f"Published final: {out_path.name}", update_stage=False)
+        return out_path, applied_crop
+
     def _execute_single_job(self, job: Dict[str, Any]):
         job_id = job["id"]
         self.current_job_id = job_id
@@ -984,11 +1024,8 @@ class QueueManager:
         out_path = Path(job["output_path"])
         cfg = job["config"]
         job_temp_dir = TEMP_DIR / f"job_{job_id}"
-        audio_temp_dir = job_temp_dir / "audio"
         encode_temp_dir = job_temp_dir / "encode"
-        audio_temp_dir.mkdir(parents=True, exist_ok=True)
         encode_temp_dir.mkdir(parents=True, exist_ok=True)
-        staged_meta_paths: List[str] = []
 
         start_time = time.time()
         job["status"] = JobStatus.EXTRACTING
@@ -1021,7 +1058,8 @@ class QueueManager:
         emit_elapsed()  # start counting immediately
 
         try:
-            # 1. HDR & Dolby Vision (needed for SVT flags before video encode)
+            # 1. HDR & Dolby Vision — drives the skip / quarantine policy below;
+            # HandBrake reads the same metadata from the source for the encode.
             # Reuse HDR analysis from queue-time probe when present (same source file)
             hdr_analysis = (job.get("media_info") or {}).get("hdr")
             need_hdr = (
@@ -1042,45 +1080,34 @@ class QueueManager:
                 mi = job.get("media_info")
                 if isinstance(mi, dict):
                     mi["hdr"] = hdr_analysis
-            def _svt_params_cli(params: Any) -> str:
-                if not isinstance(params, dict) or not params:
-                    return ""
-                parts = []
-                for key, val in params.items():
-                    if val is None or val == "":
-                        continue
-                    flag = key if str(key).startswith("--") else f"--{key}"
-                    parts.append(f"{flag} {val}")
-                return " ".join(parts)
 
-            # HDR colour flags plus the source's chroma siting (applies to SDR too,
-            # like HandBrake) — without it the AV1 sequence header says "unknown".
-            hdr_flags = " ".join(
-                [*hdr_analysis.get("svt_flags", []), *svt_chroma_flags(hdr_analysis.get("chroma_location"))]
-            )
-            # Merge pipeline-owned SVT flags (lp / low-memory) over preset params.
-            svt_merged = dict(cfg.get("svt_params") or {})
             settings_live = load_settings()
+            if not handbrake_available():
+                raise RuntimeError(
+                    "HandBrakeCLI.exe missing from bin/handbrake/ — run setup.bat to install it."
+                )
+
+            # Preset SVT-AV1-Tritium params plus the app-wide lp / low-memory
+            # settings; HandBrake hands them to the Tritium library as -x options.
+            svt_params = dict(cfg.get("svt_params") or {})
             try:
                 lp_n = int(settings_live.get("svt_lp", 0) or 0)
             except Exception:
                 lp_n = 0
             if lp_n > 0:
-                svt_merged["lp"] = lp_n
+                svt_params["lp"] = lp_n
             else:
-                svt_merged.pop("lp", None)
+                # Do not invent lp beyond settings / preset: SVT lp 0 is auto.
+                svt_params.pop("lp", None)
             if settings_live.get("svt_low_memory"):
-                svt_merged["low-memory"] = 1
+                svt_params["low-memory"] = 1
             else:
-                svt_merged.pop("low-memory", None)
-            preset_svt = _svt_params_cli(svt_merged)
-            # Do not invent --lp beyond settings / preset: SVT --lp 0 is auto.
-            extra_svt_params = " ".join(p for p in (hdr_flags, preset_svt) if p)
+                svt_params.pop("low-memory", None)
 
             encode_input = inp_path
             seg_media = None
 
-            # 2. Audio prep — None/missing → defaults; [] → video-only
+            # 2. Audio selection — None/missing → defaults; [] → video-only
             audio_tracks = job["media_info"]["audio_tracks"]
             selected_indices = cfg.get("audio_tracks_order", None)
             if selected_indices is None:
@@ -1098,6 +1125,7 @@ class QueueManager:
                 audio_format=cfg.get("audio_format", JOB_CONFIG_DEFAULTS["audio_format"]),
             )
             audio_fmt = normalize_audio_format(cfg.get("audio_format"))
+            audio_label = "E-AC-3" if audio_fmt == "eac3" else "Opus"
             container_early = str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower()
             if audio_fmt == "eac3" and container_early == "webm":
                 raise RuntimeError("E-AC-3 audio requires MP4 container (WebM only supports Opus).")
@@ -1113,25 +1141,6 @@ class QueueManager:
                     last_progress_emit[0] = time.monotonic()
                     self.emit_event("job_progress", self._progress_payload(job, log=msg))
 
-            def set_stage_progress(pct: float, stage: Optional[str] = None, log_msg: Optional[str] = None):
-                """Update step-1 ring + overall bar; optional one-shot log line."""
-                with progress_lock:
-                    pct = max(0.0, min(100.0, float(pct)))
-                    job["stage_percent"] = pct
-                    job["progress"] = map_stage_progress(JobStatus.EXTRACTING, pct)
-                    if stage:
-                        job["stage"] = stage
-                    job["elapsed_seconds"] = int(time.time() - start_time)
-                    last_progress_emit[0] = time.monotonic()
-                    if log_msg:
-                        job["logs"].append(log_msg)
-                        if len(job["logs"]) > 200:
-                            job["logs"].pop(0)
-                    extra = {"log": log_msg} if log_msg else {}
-                    self.emit_event("job_progress", self._progress_payload(job, **extra))
-
-            # HDR / DoVi (+ optional HDR10+ JSON when Tritium supports it)
-            svt_caps = (get_svt_status() or {}).get("caps") or {}
             if (hdr_analysis.get("is_dovi") or hdr_analysis.get("is_hdr")
                     or hdr_analysis.get("is_hdr10plus")
                     or hdr_analysis.get("dovi_filename_hint")
@@ -1155,10 +1164,6 @@ class QueueManager:
                     f"Color: {', '.join(bits)} · transfer={trc} · flags via {hdr_analysis.get('source', 'probe')}",
                     update_stage=False,
                 )
-                if hdr_flags:
-                    append_log(f"SVT HDR flags: {hdr_flags}", update_stage=False)
-                else:
-                    append_log("WARNING: HDR/DoVi detected but no SVT color flags were built", update_stage=False)
             else:
                 append_log("Color: SDR (no HDR/DoVi signaling)", update_stage=False)
 
@@ -1170,66 +1175,6 @@ class QueueManager:
                 append_log(f"Skipping encode — {skip_reason}", update_stage=True)
                 self._finalize_skipped(job, job_id, start_time, skip_reason)
                 return
-
-            # Preflight — fail in seconds rather than after hours of encoding.
-            hdr_strict = bool(settings_live.get("hdr_strict", True))
-            hdr_blockers = hdr_metadata_blockers(
-                hdr_analysis, svt_caps, self.pipeline.bin_dir
-            )
-            if hdr_blockers:
-                if hdr_strict:
-                    raise RuntimeError(
-                        "Cannot preserve dynamic HDR metadata — "
-                        + "; ".join(hdr_blockers)
-                        + ". "
-                        + HDR_STRICT_HINT
-                    )
-                for reason in hdr_blockers:
-                    append_log(
-                        f"WARNING: {reason} — encoding with static HDR10 flags only",
-                        update_stage=False,
-                    )
-
-            duration_sec = None
-            try:
-                duration_sec = float((job.get("media_info") or {}).get("duration") or 0) or None
-            except (TypeError, ValueError):
-                duration_sec = None
-
-            # HDR10+ extracted later from encode_input (after test segment) so frames match
-            want_hdr10plus = bool(
-                (hdr_analysis.get("is_hdr10plus") or hdr_analysis.get("hdr10plus_filename_hint"))
-                and svt_caps.get("hdr10plus_json")
-            )
-            if want_hdr10plus and not (self.pipeline.bin_dir / "hdr10plus_tool.exe").is_file():
-                append_log(
-                    "hdr10plus_tool.exe missing from bin/ — run setup_env / setup.ps1 to install it",
-                    update_stage=False,
-                )
-                want_hdr10plus = False
-
-            hdr10plus_json_path: Optional[str] = None
-
-            # DoVi RPU passthrough — on by default (settings.preserve_dovi_rpu).
-            # Only reachable here for P7/P8.1 sources: _dovi_skip_reason
-            # already sent P5/P4/unconfirmed DoVi through the skip/quarantine path
-            # above, so is_dovi at this point always means a safe base layer.
-            # Best-effort like HDR10+: a failure here degrades to plain HDR10
-            # rather than blocking the job — see README.md "HDR & Dolby Vision".
-            want_dovi_rpu = bool(
-                settings_live.get("preserve_dovi_rpu")
-                and hdr_analysis.get("is_dovi")
-                and svt_caps.get("dolby_vision_rpu")
-            )
-            if want_dovi_rpu and not (self.pipeline.bin_dir / "dovi_tool.exe").is_file():
-                append_log(
-                    "dovi_tool.exe missing from bin/ — run setup_env / setup.ps1 to install it "
-                    "— encoding without DoVi RPU passthrough",
-                    update_stage=False,
-                )
-                want_dovi_rpu = False
-
-            dovi_rpu_path: Optional[str] = None
 
             # Preserve inspector / default selection order
             selected_indices = [t["stream_index"] for t in ordered_audio]
@@ -1296,135 +1241,12 @@ class QueueManager:
                     update_stage=False
                 )
 
-            # HDR10+ JSON and DoVi RPU from the same file we will encode (segment
-            # or full), both pulled from one streamed read of its video track
-            meta_inject: List[str] = []
-            extracted: Optional[Path] = None
-            extracted_rpu: Optional[Path] = None
-            if want_hdr10plus or want_dovi_rpu:
-                # HandBrake's rule: P7 (and P8 with Blu-ray compat id 6) → RPU
-                # rewritten to profile 8.1, since the encode has no enhancement layer
-                convert_81 = want_dovi_rpu and dovi_needs_81_conversion(
-                    hdr_analysis.get("dovi_profile"), hdr_analysis.get("dovi_compat_id")
+            if ordered_audio:
+                append_log(
+                    f"Audio: {len(ordered_audio)} track(s) to {audio_label}, encoded by HandBrake",
+                    update_stage=False,
                 )
-                if convert_81:
-                    append_log(
-                        f"DoVi profile {hdr_analysis.get('dovi_profile')} "
-                        f"(compat {hdr_analysis.get('dovi_compat_id')}) — converting RPU to "
-                        "profile 8.1 (enhancement layer is not carried into the AV1 encode)",
-                        update_stage=False,
-                    )
-                meta_label = " + ".join(
-                    name for name, on in (("HDR10+", want_hdr10plus), ("DoVi RPU", want_dovi_rpu)) if on
-                )
-                set_stage_progress(56.0, stage=f"Extracting {meta_label}")
 
-                def _meta_pct(p: float):
-                    mapped = 56.0 + (max(0.0, min(100.0, p)) * 0.30)
-                    set_stage_progress(mapped, stage=f"Extracting {meta_label} ({p:.0f}%)")
-
-                extracted, extracted_rpu = self.pipeline.hdr_processor.extract_hdr_metadata(
-                    encode_input,
-                    hdr10plus_json=encode_temp_dir / "hdr10plus.json" if want_hdr10plus else None,
-                    dovi_rpu=encode_temp_dir / "dovi_rpu.bin" if want_dovi_rpu else None,
-                    convert_to_81=convert_81,
-                    progress_cb=lambda m: append_log(m, update_stage=False),
-                    percent_cb=_meta_pct,
-                    duration_sec=duration_sec if not cfg.get("test_mode") else None,
-                    cancel_event=self._cancel_event,
-                )
-                if self._cancel_event.is_set():
-                    self.pipeline.kill_all_processes()
-                    raise RuntimeError("Job cancelled.")
-
-            if want_hdr10plus:
-                json_problem = (
-                    "HDR10+ extract produced nothing"
-                    if not extracted
-                    else self.pipeline.hdr_processor.verify_hdr10plus_json(extracted)
-                )
-                if json_problem is None:
-                    staged = stage_svt_meta_file(extracted, job_id, "hdr10plus.json")
-                    hdr10plus_json_path = str(staged)
-                    staged_meta_paths.append(hdr10plus_json_path)
-                    meta_inject.append("--hdr10plus-json")
-                    append_log(f"HDR10+ JSON staged for SVT: {staged}", update_stage=False)
-                elif hdr_analysis.get("is_hdr10plus") and hdr_strict:
-                    raise RuntimeError(
-                        f"HDR10+ metadata unusable ({json_problem}) — refusing to encode "
-                        f"an HDR10+ source as plain HDR10. " + HDR_STRICT_HINT
-                    )
-                else:
-                    append_log(
-                        f"HDR10+ metadata unavailable ({json_problem}) — "
-                        "encoding with static HDR10 color flags only",
-                        update_stage=False,
-                    )
-
-            # DoVi RPU is best-effort: any failure just logs and falls back to
-            # plain HDR10, never raises.
-            if want_dovi_rpu:
-                rpu_problem = (
-                    "DoVi RPU extract produced nothing"
-                    if not extracted_rpu
-                    else self.pipeline.hdr_processor.verify_dovi_rpu(extracted_rpu)
-                )
-                if rpu_problem is None:
-                    staged_rpu = stage_svt_meta_file(extracted_rpu, job_id, "dovi_rpu.bin")
-                    dovi_rpu_path = str(staged_rpu)
-                    staged_meta_paths.append(dovi_rpu_path)
-                    meta_inject.append("--dolby-vision-rpu")
-                    append_log(f"DoVi RPU staged for SVT: {staged_rpu}", update_stage=False)
-                else:
-                    append_log(
-                        f"DoVi RPU unavailable ({rpu_problem}) — "
-                        "encoding with HDR10 only (RPU passthrough skipped)",
-                        update_stage=False,
-                    )
-
-            if self._cancel_event.is_set():
-                self.pipeline.kill_all_processes()
-                raise RuntimeError("Job cancelled.")
-
-            if meta_inject:
-                append_log(f"SVT metadata inject: {' '.join(meta_inject)}", update_stage=False)
-
-            def audio_cb(msg):
-                append_log(msg, update_stage=True)
-
-            audio_fmt = normalize_audio_format(cfg.get("audio_format"))
-            audio_label = "E-AC-3" if audio_fmt == "eac3" else "Opus"
-
-            # Audio after HDR10+ extract — avoid concurrent ffmpeg + VS on the same MKV
-            append_log(
-                f"Transcoding {len(ordered_audio)} audio track(s) to {audio_label}...",
-                update_stage=True
-            )
-            job["status"] = JobStatus.EXTRACTING
-            job["stage"] = f"Transcoding Audio to {audio_label}"
-            job["stage_num"] = 1
-            job["progress"] = map_stage_progress(JobStatus.EXTRACTING, 20)
-            self.save_queue()
-            self.emit_event("job_update", job)
-
-            processed_audio = self.pipeline.transcode_audio_tracks(
-                encode_input,
-                ordered_audio,
-                audio_temp_dir,
-                audio_cb,
-                self._cancel_event
-            )
-            if self._cancel_event.is_set():
-                self.pipeline.kill_all_processes()
-                raise RuntimeError("Job cancelled.")
-            if ordered_audio and len(processed_audio) != len(ordered_audio):
-                raise RuntimeError(
-                    f"Audio track count mismatch: got {len(processed_audio)}, "
-                    f"expected {len(ordered_audio)}"
-                )
-            append_log(f"Audio transcode finished ({len(processed_audio)} track(s)).", update_stage=False)
-
-            # 3. SVT-AV1-Tritium video encoding (exclusive access to source after audio)
             def encode_cb(data):
                 if self._cancel_event.is_set():
                     self.pipeline.kill_all_processes()
@@ -1447,196 +1269,34 @@ class QueueManager:
                     last_progress_emit[0] = time.monotonic()
                     self.emit_event("job_progress", self._progress_payload(job, log=raw))
 
-            # Autocrop (least-crop-wins — see detect_black_bar_crop)
-            crop = {"left": 0, "top": 0, "right": 0, "bottom": 0}
-            if cfg.get("autocrop", True):
-                try:
-                    crop_duration = None
-                    src_w = src_h = None
-                    if cfg.get("test_mode") and isinstance(seg_media, dict):
-                        crop_duration = float(seg_media.get("duration") or 0) or None
-                        v = (seg_media.get("video") or {})
-                        src_w = int(v.get("width") or 0) or None
-                        src_h = int(v.get("height") or 0) or None
-                    else:
-                        crop_duration = (job.get("media_info") or {}).get("duration")
-                        v = ((job.get("media_info") or {}).get("video") or {})
-                        src_w = int(v.get("width") or 0) or None
-                        src_h = int(v.get("height") or 0) or None
-                    crop = self.pipeline.detect_black_bar_crop(
-                        encode_input,
-                        duration_sec=crop_duration,
-                        src_w=src_w,
-                        src_h=src_h,
-                        progress_cb=lambda msg: append_log(msg, update_stage=True),
-                        cancel_event=self._cancel_event,
-                    )
-                except Exception as crop_err:
-                    append_log(f"Autocrop skipped: {crop_err}", update_stage=False)
-                    crop = {"left": 0, "top": 0, "right": 0, "bottom": 0}
-                if self._cancel_event.is_set():
-                    self.pipeline.kill_all_processes()
-                    raise RuntimeError("Job cancelled.")
-
-            # A DoVi RPU carries frame-geometry-dependent metadata (active area /
-            # L5-L8 trims) extracted from the *uncropped* source above — autocrop
-            # runs after that and can shrink the actual encoded frame, so an
-            # RPU injected alongside a real crop would describe geometry that no
-            # longer matches the picture. Correct it via dovi_tool's documented
-            # editor fix for exactly this ({"active_area": {"crop": true}} —
-            # "should be set to true when final video has no letterbox bars")
-            # rather than dropping RPU passthrough outright. Still best-effort:
-            # if the edit itself fails, fall back to HDR10-only same as any
-            # other RPU failure. See README.md "HDR & Dolby Vision".
-            if dovi_rpu_path and any(int(crop.get(k, 0) or 0) for k in ("left", "top", "right", "bottom")):
-                cropped_rpu_tmp = encode_temp_dir / "dovi_rpu_cropped.bin"
-                corrected = self.pipeline.hdr_processor.apply_dovi_crop_edit(
-                    Path(dovi_rpu_path),
-                    cropped_rpu_tmp,
-                    progress_cb=lambda m: append_log(m, update_stage=False),
-                )
-                if corrected:
-                    staged_cropped = stage_svt_meta_file(corrected, job_id, "dovi_rpu_cropped.bin")
-                    dovi_rpu_path = str(staged_cropped)
-                    staged_meta_paths.append(dovi_rpu_path)
-                    append_log(
-                        "Autocrop is active — corrected DoVi RPU active area to match "
-                        "the cropped frame (dovi_tool editor).",
-                        update_stage=False,
-                    )
-                else:
-                    append_log(
-                        "Autocrop is active and DoVi RPU active-area correction failed — "
-                        "dropping RPU passthrough for this job (RPU geometry would no "
-                        "longer match the cropped frame); encoding with HDR10 only.",
-                        update_stage=False,
-                    )
-                    dovi_rpu_path = None
-                    if "--dolby-vision-rpu" in meta_inject:
-                        meta_inject.remove("--dolby-vision-rpu")
-
             self._wait_if_paused()
             if self._cancel_event.is_set():
                 raise RuntimeError("Job cancelled.")
 
-            # Only now — autocrop is done, so nothing left to overwrite this with
+            # 3. HandBrakeCLI: autocrop + encode + audio + mux, then verify and publish.
             job["status"] = JobStatus.FINAL_ENCODE
-            job["stage"] = "Encoding (SVT-AV1-Tritium)"
+            job["stage"] = "Encoding (HandBrake · SVT-AV1-Tritium)"
             job["stage_num"] = 2
             job["stage_percent"] = 0.0
             job["progress"] = map_stage_progress(JobStatus.FINAL_ENCODE)
             self.save_queue()
             self.emit_event("job_update", job)
 
-            try:
-                encode_resolution = cfg.get("resolution_target", JOB_CONFIG_DEFAULTS["resolution_target"])
-
-                encoded_ivf = self.pipeline.run_svt_encode(
-                    input_file=encode_input,
-                    job_temp_dir=encode_temp_dir,
-                    crf=cfg.get("crf", JOB_CONFIG_DEFAULTS["crf"]),
-                    preset=cfg.get("preset", JOB_CONFIG_DEFAULTS["preset"]),
-                    resolution_target=encode_resolution,
-                    extra_svt_params=extra_svt_params,
-                    hdr10plus_json=hdr10plus_json_path,
-                    dolby_vision_rpu=dovi_rpu_path,
-                    crop=crop,
-                    progress_cb=encode_cb,
-                    cancel_event=self._cancel_event,
-                    pid_cb=lambda pid: self._set_job_pid(job, pid),
-                )
-            except Exception:
-                self.pipeline.kill_all_processes()
-                raise
-            finally:
-                self._set_job_pid(job, None)
-
-            if self._cancel_event.is_set():
-                self.pipeline.kill_all_processes()
-                raise RuntimeError("Job cancelled.")
-
-            self._wait_if_paused()
-            if self._cancel_event.is_set():
-                raise RuntimeError("Job cancelled.")
-
-            # 4. Final container mux (MP4 or WebM)
-            container = str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower()
-            if container != "webm":
-                container = "mp4"
-            job["status"] = JobStatus.REMUXING
-            if container == "webm":
-                job["stage"] = "Muxing WebM"
-            else:
-                job["stage"] = "Muxing Web-Optimized MP4 (+faststart)"
-            job["stage_num"] = 3
-            job["stage_percent"] = 0.0
-            job["progress"] = map_stage_progress(JobStatus.REMUXING)
-            self.save_queue()
-            self.emit_event("job_update", job)
-
-            def mux_cb(msg):
-                append_log(msg, update_stage=False)
-
-            # Rebuild mux color args fresh (stored ffmpeg_color may be from an older BSF syntax)
-            color_args = None
-            if (
-                hdr_analysis.get("is_hdr")
-                or hdr_analysis.get("is_dovi")
-                or hdr_analysis.get("is_hdr10plus")
-                or hdr_analysis.get("dovi_filename_hint")
-            ):
-                trc = str(hdr_analysis.get("color_transfer") or "smpte2084").lower()
-                transfer_code = "18" if ("arib" in trc or "hlg" in trc) else "16"
-                ff_range = str(hdr_analysis.get("color_range") or "tv")
-                color_args = self.pipeline.hdr_processor._ffmpeg_color_args(
-                    transfer_code, color_range=ff_range
-                )
-            # Container-level HDR10 static metadata (mdcv / clli) — the SVT flags
-            # only carry it in the bitstream.
-            hdr_input_args = (
-                ffmpeg_hdr_input_args(
-                    hdr_analysis.get("mastering_display"),
-                    hdr_analysis.get("content_light"),
-                )
-                if color_args
-                else []
+            # Autocrop is HandBrake's (conservative: least crop wins); it also
+            # corrects the DoVi RPU's active area for the crop it applies.
+            final_out, crop = self._encode_with_handbrake(
+                job, job_id, cfg, encode_input, out_path, seg_media, ordered_audio,
+                bool(cfg.get("autocrop", True)), hdr_analysis, svt_params, settings_live,
+                encode_temp_dir, encode_cb, append_log,
             )
-            # dovi_rpu_path is still set only if the RPU actually went into the
-            # encode (cleared above when autocrop's RPU correction failed).
-            inject_dovi = bool(dovi_rpu_path and hdr_analysis.get("is_dovi"))
-
-            # Output naming is final at queue-add (hdr_label already mirrors encode policy).
-
-            # Last-chance collision guard (file may have appeared since job was queued)
-            with self._lock:
-                reserved = self._reserved_output_paths(exclude_job_id=job_id)
-            safe_out = allocate_unique_output_path(out_path, reserved=reserved)
-            if safe_out.resolve() != Path(out_path).resolve():
-                append_log(
-                    f"Output path already occupied — writing to {safe_out.name} instead",
-                    update_stage=False,
-                )
-                out_path = safe_out
-                job["output_path"] = str(safe_out)
-                self.save_queue()
-                self.emit_event("job_update", job)
-
-            final_out = self.pipeline.mux_output(
-                encoded_ivf,
-                processed_audio,
-                out_path,
-                container=container,
-                progress_cb=mux_cb,
-                color_args=color_args,
-                hdr_input_args=hdr_input_args,
-                inject_dovi=inject_dovi,
-                cancel_event=self._cancel_event,
-            )
+            out_path = final_out
 
             # 5. Optional post-encode SSIMU2 score (Pipeline Status → SSIMU2 post-encode score)
             # Final file is already published — cancel after this point still counts as COMPLETED.
             ssimu2_stats: Dict[str, Any] = {}
-            if cfg.get("ssimu2_post", False) and not self._cancel_event.is_set():
+            if cfg.get("ssimu2_post", False) and crop is None:
+                append_log("SSIMU2 skipped: the applied crop is unknown, so the score would compare mismatched frames", update_stage=False)
+            elif cfg.get("ssimu2_post", False) and not self._cancel_event.is_set():
                 job["stage"] = "Measuring SSIMU2"
                 job["stage_num"] = 3
                 self.save_queue()
@@ -1646,7 +1306,7 @@ class QueueManager:
                     metric_skip = 1 if cfg.get("test_mode") else 3
                     ssimu2_stats = self.pipeline.measure_final_ssimu2(
                         source_file=encode_input,
-                        encoded_file=encoded_ivf,
+                        encoded_file=final_out,
                         ssimu2_mode=cfg.get("ssimu2", "auto"),
                         crop=crop,
                         resolution_target=cfg.get("resolution_target", JOB_CONFIG_DEFAULTS["resolution_target"]),
@@ -1733,6 +1393,7 @@ class QueueManager:
                 "reduction_percent": round(ratio, 1),
                 "duration_seconds": job["elapsed_seconds"],
                 "test_mode": bool(cfg.get("test_mode")),
+                "encoder": "handbrake",
             }
             if ssimu2_stats:
                 job["stats"]["ssimu2_avg"] = ssimu2_stats.get("avg")
@@ -1872,24 +1533,11 @@ class QueueManager:
             stop_elapsed.set()
             job["elapsed_seconds"] = int(time.time() - start_time)
             self.current_job_id = None
-            # Always clean job temp + staged HDR10+ JSON (success path also calls cleanup — idempotent)
+            # Always clean job temp (success path also calls cleanup — idempotent)
             try:
                 self.pipeline.cleanup_temp_files(job_temp_dir)
             except Exception as ce:
                 print(f"[!] Temp cleanup: {ce}")
-            try:
-                cleanup_staged_meta(job_id, staged_meta_paths)
-            except Exception:
-                pass
-            # Remove legacy IVF left beside the source from older builds
-            try:
-                stray = Path(job.get("input_path") or "")
-                if stray.is_file():
-                    leftover = stray.parent / f"{stray.stem}.ivf"
-                    if leftover.is_file():
-                        leftover.unlink(missing_ok=True)
-            except Exception:
-                pass
             self.save_queue()
             # Push a live update when the job is still pending (cancelled stays in queue).
             # Completed / failed were already moved to history + job_removed.

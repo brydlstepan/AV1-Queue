@@ -6,7 +6,6 @@ setuptools
 vapoursynth
 vstools
 vsjetpack
-rich
 fastapi
 uvicorn[standard]
 websockets
