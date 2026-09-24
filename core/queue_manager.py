@@ -21,10 +21,11 @@ from core.handbrake_encode import (
     hb_audio_track_numbers,
     parse_applied_crop,
 )
-from core.hdr_dovi import svt_chroma_flags
+from core.hdr_dovi import svt_chroma_position
 from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format, target_height_for
 from core.app_settings import load_settings, JOB_CONFIG_DEFAULTS
 from core.media_tagging import build_media_tag, library_output_path, refresh_media_tag_quality
+from core.subtitle_extract import select_default_subtitle_indices
 from core.subtitle_search import search_and_download_missing
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -98,6 +99,8 @@ HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class JobStatus:
+    # Persisted in queue.json / history — names kept from the old pipeline:
+    # EXTRACTING = prepare (probe, test segment), REMUXING = verify & publish.
     QUEUED = "QUEUED"
     EXTRACTING = "EXTRACTING"
     FINAL_ENCODE = "FINAL_ENCODE"
@@ -361,14 +364,20 @@ class QueueManager:
         })
 
         has_audio_order = bool(config) and "audio_tracks_order" in config
+        has_sub_tracks = bool(config) and "subtitle_tracks" in config
         if config:
             cleaned = dict(config)
             # Explicit key (including []) = user choice; missing key keeps auto defaults.
             audio_order = cleaned.pop("audio_tracks_order", None) if has_audio_order else None
+            sub_tracks = cleaned.pop("subtitle_tracks", None) if has_sub_tracks else None
             default_config.update(cleaned)
             if has_audio_order:
                 default_config["audio_tracks_order"] = (
                     list(audio_order) if audio_order is not None else []
+                )
+            if has_sub_tracks:
+                default_config["subtitle_tracks"] = (
+                    list(sub_tracks) if sub_tracks is not None else []
                 )
 
         # Auto-pick audio only when the caller didn't specify a selection — the
@@ -378,6 +387,15 @@ class QueueManager:
                 media["audio_tracks"],
                 languages=default_config.get("audio_languages"),
                 best_only=default_config.get("audio_best_only", JOB_CONFIG_DEFAULTS["audio_best_only"]),
+            )
+        # Same for subtitles (e.g. watch-folder adds): the tracks extraction
+        # would pick by the job's languages / kinds, stored so the edit dialog
+        # shows exactly what will be extracted.
+        if not has_sub_tracks:
+            default_config["subtitle_tracks"] = select_default_subtitle_indices(
+                media["subtitle_tracks"],
+                languages=default_config.get("subtitle_languages"),
+                kinds=default_config.get("subtitle_kinds"),
             )
 
         media_tag = build_media_tag(
@@ -453,6 +471,10 @@ class QueueManager:
                 # Explicit list (including []) — empty means video-only, not "use defaults"
                 order = updates.pop("audio_tracks_order")
                 cfg["audio_tracks_order"] = list(order) if order is not None else []
+            if "subtitle_tracks" in updates:
+                # Explicit list (including []) — empty means extract none
+                subs = updates.pop("subtitle_tracks")
+                cfg["subtitle_tracks"] = list(subs) if subs is not None else []
 
             cfg.update(updates)
             job["config"] = cfg
@@ -904,9 +926,9 @@ class QueueManager:
 
         hb_params = dict(svt_params)
         # HandBrake leaves the AV1 chroma siting unset; take it from the source
-        chroma = svt_chroma_flags(hdr_analysis.get("chroma_location"))
+        chroma = svt_chroma_position(hdr_analysis.get("chroma_location"))
         if chroma:
-            hb_params.setdefault("chroma-sample-position", chroma[1])
+            hb_params.setdefault("chroma-sample-position", chroma)
         preserve_dovi = bool(settings_live.get("preserve_dovi_rpu"))
         all_audio = (seg_media or job.get("media_info") or {}).get("audio_tracks") or []
         cmd = build_handbrake_command(
@@ -1319,7 +1341,7 @@ class QueueManager:
                     ssimu2_stats = {}
             elif self._cancel_event.is_set():
                 append_log(
-                    "Cancelled after mux — keeping published output (skipping SSIMU2)",
+                    "Cancelled after publish — keeping the output (skipping SSIMU2)",
                     update_stage=False,
                 )
 
@@ -1413,9 +1435,11 @@ class QueueManager:
             self._archive_job_to_history(job, job_id)
 
             # Subtitle extract / OpenSubtitles fill — background so the next
-            # encode can start immediately. Skip in Test Mode (segment encodes
-            # shouldn't leave full-movie sidecars).
-            if not cfg.get("test_mode"):
+            # encode can start immediately. Test Mode skips it unless
+            # "Extract subtitles in Test Mode" is on: then it runs unchanged
+            # (full-length, from the original, online search included) as a
+            # check that subtitles are found — timing isn't cut to the segment.
+            if not cfg.get("test_mode") or cfg.get("test_mode_subtitles"):
                 src_for_subs = Path(job["input_path"])
                 out_for_subs = Path(final_out)
                 sub_basename = out_for_subs.stem
@@ -1447,6 +1471,9 @@ class QueueManager:
                                     output_dir=sub_dir,
                                     basename=sub_basename,
                                     strip_credits=bool(cfg.get("subtitle_strip_credits", True)),
+                                    # Per-job choice from the inspector / edit
+                                    # dialog; None (older jobs) = by rule
+                                    stream_indices=cfg.get("subtitle_tracks"),
                                 )
                                 self.emit_event("subtitle_extract", {
                                     "id": jid,

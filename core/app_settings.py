@@ -72,6 +72,9 @@ JOB_CONFIG_DEFAULTS: Dict[str, Any] = {
     "autocrop": True,
     "ssimu2_post": False,
     "extract_subtitles": True,
+    # Also run the normal subtitle step (extract + online search, full length)
+    # for Test Mode encodes — a check that subtitles are found; off by default
+    "test_mode_subtitles": False,
     "subtitle_languages": ["eng"],
     "subtitle_kinds": ["standard"],
     "subtitle_strip_credits": True,

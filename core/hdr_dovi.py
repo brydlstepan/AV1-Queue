@@ -114,10 +114,9 @@ def _format_mastering(side: Dict[str, Any]) -> Optional[str]:
 _SVT_CHROMA_POSITION = {"left": "vertical", "topleft": "colocated"}
 
 
-def svt_chroma_flags(chroma_location: Any) -> List[str]:
-    """ffprobe chroma_location → SVT-AV1 chroma-sample-position (left → vertical)."""
-    pos = _SVT_CHROMA_POSITION.get(str(chroma_location or "").strip().lower())
-    return ["--chroma-sample-position", pos] if pos else []
+def svt_chroma_position(chroma_location: Any) -> Optional[str]:
+    """ffprobe chroma_location → SVT-AV1 chroma-sample-position value (left → vertical), else None."""
+    return _SVT_CHROMA_POSITION.get(str(chroma_location or "").strip().lower())
 
 
 def _parse_content_light(side: Dict[str, Any]) -> Optional[str]:
@@ -449,7 +448,7 @@ class HDRDoviProcessor:
                     is_hdr10plus = True
                     break
 
-        _, ff_range = self._color_range_flags(video_stream)
+        ff_range = self._color_range(video_stream)
 
         source = "probe"
         if (fname_dovi or fname_hdr10 or fname_hdr10plus or fname_hlg) and not (
@@ -480,17 +479,17 @@ class HDRDoviProcessor:
             "color_space": color_space,
             "color_range": ff_range,
             # ffprobe's name for the source's 4:2:0 chroma siting; passed to
-            # HandBrake as chroma-sample-position (see svt_chroma_flags)
+            # HandBrake as chroma-sample-position (see svt_chroma_position)
             "chroma_location": str(video_stream.get("chroma_location") or ""),
             "source": source,
         }
 
     @staticmethod
-    def _color_range_flags(video_stream: Optional[Dict[str, Any]]) -> Tuple[str, str]:
-        """Return (AV1 color_range value, ffmpeg color_range name): 0 / tv = limited, 1 / pc = full."""
+    def _color_range(video_stream: Optional[Dict[str, Any]]) -> str:
+        """ffmpeg color_range name of the source: "tv" (limited) or "pc" (full)."""
         cr = ""
         if isinstance(video_stream, dict):
             cr = str(video_stream.get("color_range") or "").lower()
         if cr in ("pc", "full", "jpeg", "1"):
-            return "1", "pc"
-        return "0", "tv"
+            return "pc"
+        return "tv"

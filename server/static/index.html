@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=pass33">
+  <link rel="stylesheet" href="/static/app.css?v=pass34">
 </head>
 <body>
   <div class="app-container">
@@ -233,6 +233,10 @@
             <div class="insp-section-title">Audio Tracks</div>
             <p class="insp-section-hint" id="inspAudioHint">Auto-select: Best tracks selected.</p>
             <div class="insp-tracks-list scroll-thin" id="inspAudioTracks"></div>
+
+            <div class="insp-section-title insp-section-title--spaced">Subtitles</div>
+            <p class="insp-section-hint" id="inspSubHint">Text tracks matching your subtitle languages and kinds are selected.</p>
+            <div class="insp-tracks-list scroll-thin" id="inspSubTracks"></div>
 
             <div class="modal-actions-row">
               <button class="btn btn-primary" id="btnConfirmAddJob">Add to Queue</button>
@@ -819,7 +823,7 @@ Default: PSNR</span>
                   <span class="setting-label-text">Extract subtitles</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">After a successful encode, extract text subtitles from the original file next to it. Runs in the background so the next queue job can start immediately. Image-based subs (PGS, etc.) are skipped.</span>
+                    <span class="setting-help-tip" role="tooltip">After a successful encode, extract text subtitles from the original file and save them next to the encoded file, named after it. Runs in the background so the next queue job can start immediately. Image-based subs (PGS, etc.) are skipped.</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default pipeline-reset" data-target="globalExtractSubtitles" title="Reset to default (On)" aria-label="Reset to default">↺</button>
@@ -827,6 +831,22 @@ Default: PSNR</span>
                   <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalExtractSubtitles" role="switch" aria-checked="true" data-default="true">
                     <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
                     <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="testModeSubs" id="pipelineTestModeSubsRow">
+                <label class="setting-label" for="globalTestModeSubtitles">
+                  <span class="setting-label-text">Extract subtitles in Test Mode</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Also run the subtitle step for Test Mode encodes: extract the selected tracks and, if enabled, search online for missing ones, named after the test file. A check that subtitles are found and exported: the sidecars are full-length, not cut to the test segment.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalTestModeSubtitles" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalTestModeSubtitles" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
                   </button>
                 </div>
               </div>
@@ -1022,6 +1042,7 @@ Default: PSNR</span>
           <div class="preset-section-tabs">
             <button type="button" class="tab-btn active" id="editJobTabDetails">Details</button>
             <button type="button" class="tab-btn" id="editJobTabAudio">Audio</button>
+            <button type="button" class="tab-btn" id="editJobTabSubs">Subtitles</button>
             <button type="button" class="tab-btn" id="editJobTabParams">Parameters</button>
           </div>
 
@@ -1059,6 +1080,16 @@ Default: PSNR</span>
               <div class="form-group" style="margin-bottom: 0;">
                 <label>Audio Tracks</label>
                 <div class="insp-tracks-list scroll-thin" id="editJobAudioTracks"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="editJobSubsSection" class="hidden">
+            <div class="preset-settings-fields scroll-thin">
+              <div class="form-group" style="margin-bottom: 0;">
+                <label>Subtitle Tracks</label>
+                <p class="insp-section-hint" id="editJobSubHint"></p>
+                <div class="insp-tracks-list scroll-thin" id="editJobSubTracks"></div>
               </div>
             </div>
           </div>
@@ -1131,6 +1162,6 @@ Default: PSNR</span>
     </div>
   </div>
 
-  <script src="/static/app.js?v=pass33"></script>
+  <script src="/static/app.js?v=pass34"></script>
 </body>
 </html>

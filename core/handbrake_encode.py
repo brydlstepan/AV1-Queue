@@ -125,8 +125,8 @@ def build_handbrake_command(
     dynamic_metadata: str,
 ) -> List[str]:
     """
-    audio_tracks come from pipeline.select_and_prioritize_audio (target_codec,
-    target_channels, target_bitrate, layout_desc); audio_track_numbers are the
+    audio_tracks come from pipeline.select_and_prioritize_audio (audio_format,
+    target_channels, target_bitrate); audio_track_numbers are the
     matching HandBrake track numbers. dynamic_metadata is a
     --hdr-dynamic-metadata value ("all", "hdr10plus", "dolbyvision") or "none".
     """
@@ -165,7 +165,7 @@ def build_handbrake_command(
     if audio_tracks:
         encoders, bitrates, mixdowns = [], [], []
         for t in audio_tracks:
-            eac3 = str(t.get("target_codec")) == "eac3"
+            eac3 = str(t.get("audio_format")) == "eac3"
             ch = int(t.get("target_channels") or 2)
             encoders.append("eac3" if eac3 else "opus")
             bitrates.append(str(_kbps(t.get("target_bitrate"), 640 if eac3 else 160)))
@@ -175,8 +175,9 @@ def build_handbrake_command(
             "-E", ",".join(encoders),
             "-B", ",".join(bitrates),
             "-6", ",".join(mixdowns),
-            # Unnamed tracks, like the SVT path's mux: don't carry the source
-            # title (often stale, e.g. "DTS-HD MA 7.1") or invent one
+            # Unnamed tracks: don't carry the source title (often stale after
+            # the re-encode, e.g. "DTS-HD MA 7.1") or invent one — players
+            # label them from language, codec and layout
             "--no-keep-aname",
             "--automatic-naming-behaviour", "off",
         ])
