@@ -18,8 +18,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const CONTAINER_KEY = "av1queue_container";
   const SVT_LP_KEY = "av1queue_svt_lp";
   const SVT_LOW_MEMORY_KEY = "av1queue_svt_low_memory";
-  const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]] - [[quality]]";
-  const DEFAULT_NAME_TEMPLATE_EPISODE = "[show] - S[season]E[episode] - [epname] - [[quality]]";
+  const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]";
+  const DEFAULT_NAME_TEMPLATE_EPISODE = "[show] - S[season]E[episode] - [epname] - [[resolution]]";
 
   function stripExtToken(tpl) {
     return String(tpl || "").replace(/\.?\[ext\]/gi, "").replace(/\s+$/g, "").replace(/\.$/, "");
@@ -48,6 +48,7 @@ document.addEventListener("DOMContentLoaded", () => {
       out = out.replace(tokenRe, (_, key) => values[key] || "");
     }
     out = out.replace(/\(\s*\)/g, "").replace(/\[\s*\]/g, "");
+    out = out.replace(/\[\s+/g, "[").replace(/\s+\]/g, "]"); // "[[resolution] [hdr]]" for SDR
     out = out.replace(/(?:\s*-\s*){2,}/g, " - ").replace(/\s{2,}/g, " ");
     out = out.replace(/^[\s.\-]+|[\s.\-]+$/g, "");
     const ext = String((values && values.ext) || "mp4").replace(/^\./, "");
@@ -730,13 +731,16 @@ document.addEventListener("DOMContentLoaded", () => {
     row.classList.toggle("is-default", atDefault);
   }
 
-  // Mirrors core/media_tagging.hdr_label — the tag that goes in the filename.
-  // "" for SDR (no tag is written). Filename always tags the HDR10 base layer,
-  // even when preserve_dovi_rpu also carries the RPU — see README.md "HDR & Dolby Vision".
-  function hdrFilenameTag(hdr) {
+  // Mirrors core/media_tagging.hdr_label: the [hdr] naming token / badge label
+  // the encode is expected to carry (DoVi only while preserve_dovi_rpu is on).
+  // "" for SDR. The server corrects it after the encode from the output check.
+  function hdrFilenameTag(hdr, preserveDovi = appSettings.preserve_dovi_rpu !== false) {
     if (!hdr) return "";
-    if (hdr.is_dovi) return hdr.is_hdr10plus ? "HDR10plus" : "HDR10";
+    const dovi = !!hdr.is_dovi && preserveDovi;
+    if (dovi && hdr.is_hdr10plus) return "DoVi HDR10plus";
+    if (dovi) return "DoVi";
     if (hdr.is_hdr10plus) return "HDR10plus";
+    if (hdr.is_hlg) return "HLG";
     if (hdr.is_hdr) return "HDR10";
     return "";
   }
@@ -2711,7 +2715,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const outName = (job.output_path || "").split(/[\\/]/).pop() || tag.library_name || "";
     const displayName = outName || job.filename || "";
     const imdb = tag.imdb_id || "";
-    const quality = tag.quality || "";
+    const quality = tag.resolution != null
+      ? [tag.resolution, tag.hdr_label].filter(Boolean).join(" ")
+      : (tag.quality || "");
     const year = tag.year ? String(tag.year) : "";
     const tagSource = tag.source || "";
     const audioLangBadges = pipelineAudioLangBadges(job);
@@ -3493,9 +3499,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!hdrTag && hints.hdr) {
       hdrTag = hints.hdr === "DoVi" ? "HDR10" : String(hints.hdr);
     }
-    const quality = [res, hdrTag].filter(Boolean).join(" ") || tag.quality || "AV1";
-    const q = String(quality).trim();
-    const qParts = q.split(/\s+/);
+    const q = res || "AV1";
     const name = sanitizeFilenamePart(title) || "Unknown";
     const season = tag.season != null ? pad2(tag.season) : "";
     const episode = tag.episode != null ? pad2(tag.episode) : "";
@@ -3506,8 +3510,8 @@ document.addEventListener("DOMContentLoaded", () => {
       imdbid: imdb,
       imdb,
       quality: sanitizeFilenamePart(q),
-      resolution: qParts[0] || "",
-      hdr: qParts.slice(1).join(" ") || "",
+      resolution: res || "",
+      hdr: sanitizeFilenamePart(hdrTag || ""),
       width: video.width ? String(video.width) : "",
       height: video.height ? String(video.height) : "",
       original: sanitizeFilenamePart(tag.original || title) || name,
@@ -4028,12 +4032,12 @@ document.addEventListener("DOMContentLoaded", () => {
         : "";
 
       const hdr = item.media_info?.hdr;
-      // Prefer the tag actually written into the filename, so the badge and the
-      // file on disk can never disagree; fall back for pre-media_tag records.
+      // Prefer the label from the output check (media_tag.hdr_label, updated
+      // after the encode); older records only have it inside media_tag.quality.
       const qualityParts = String(item.media_tag?.quality || "").trim().split(/\s+/);
-      const hdrLabel = (qualityParts.length > 1
-        ? qualityParts.slice(1).join(" ")
-        : hdrFilenameTag(hdr)) || "SDR";
+      const hdrLabel = (item.media_tag?.hdr_label != null
+        ? item.media_tag.hdr_label
+        : (qualityParts.length > 1 ? qualityParts.slice(1).join(" ") : hdrFilenameTag(hdr))) || "SDR";
 
       const audioLayouts = encodedAudioChannelLabels(item);
       const audioBadge = audioLayouts.length

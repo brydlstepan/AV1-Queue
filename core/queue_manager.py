@@ -24,7 +24,7 @@ from core.handbrake_encode import (
 from core.hdr_dovi import svt_chroma_position
 from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format, target_height_for
 from core.app_settings import load_settings, JOB_CONFIG_DEFAULTS
-from core.media_tagging import build_media_tag, library_output_path, refresh_media_tag_quality
+from core.media_tagging import build_media_tag, library_output_path, output_hdr_label, refresh_media_tag_quality
 from core.subtitle_extract import select_default_subtitle_indices
 from core.subtitle_search import search_and_download_missing
 
@@ -402,7 +402,7 @@ class QueueManager:
             inp,
             video=media.get("video"),
             hdr_info=hdr_info,
-            settings=settings,
+            settings=self._naming_settings(default_config),
             container=default_config.get("container") or JOB_CONFIG_DEFAULTS["container"],
             resolution_target=default_config.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
         )
@@ -497,10 +497,7 @@ class QueueManager:
                 # Render with the templates this job snapshotted at add time, so
                 # a later change to the global template doesn't retroactively
                 # rename jobs already sitting in the queue.
-                job_settings = dict(load_settings())
-                for k in ("name_template_movie", "name_template_episode"):
-                    if cfg.get(k):
-                        job_settings[k] = cfg[k]
+                job_settings = self._naming_settings(cfg)
                 tag = refresh_media_tag_quality(
                     tag,
                     video=video,
@@ -879,6 +876,18 @@ class QueueManager:
         self._archive_job_to_history(job, job_id)
         print(f"[!] Job {job_id} failed: {error}")
 
+    @staticmethod
+    def _naming_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        App settings with the job's naming templates overlaid, so a later change to the global naming settings doesn't
+        retroactively rename jobs already in the queue.
+        """
+        settings = dict(load_settings())
+        for k in ("name_template_movie", "name_template_episode"):
+            if cfg.get(k):
+                settings[k] = cfg[k]
+        return settings
+
     def _encode_with_handbrake(
         self,
         job: Dict[str, Any],
@@ -1024,6 +1033,9 @@ class QueueManager:
                     "independently confirmed in the AV1 output",
                     update_stage=False,
                 )
+            out_path = self._rename_for_output_hdr(
+                job, job_id, cfg, out_path, output_hdr_label(hdr_analysis, out_info), append_log
+            )
 
         try:
             os.replace(str(partial), str(out_path))
@@ -1032,6 +1044,59 @@ class QueueManager:
             raise RuntimeError(f"Could not publish HandBrake output to {out_path}: {e}") from e
         append_log(f"Published final: {out_path.name}", update_stage=False)
         return out_path, applied_crop
+
+    def _rename_for_output_hdr(
+        self,
+        job: Dict[str, Any],
+        job_id: str,
+        cfg: Dict[str, Any],
+        out_path: Path,
+        actual_hdr: str,
+        append_log,
+    ) -> Path:
+        """
+        The queue-time name predicted the HDR format from the source; once the
+        output check knows what the file really carries, re-render the name
+        with that label (e.g. DoVi expected but the RPU didn't survive → HDR10).
+        Only for library-named outputs — a custom output path is left alone.
+        """
+        tag = job.get("media_tag") or {}
+        # Jobs queued before hdr_label existed only have it inside tag["quality"]
+        expected = tag.get("hdr_label")
+        if expected is None:
+            expected = " ".join(str(tag.get("quality") or "").split()[1:])
+        if not cfg.get("autoname_output", True) or tag.get("hdr_label") == actual_hdr:
+            return out_path
+        mi = job.get("media_info") or {}
+        predicted = Path(default_output_path(job["input_path"], cfg, tag))
+        # A collision suffix (_2, _3, …) may have been added at queue time
+        if not out_path.stem.startswith(predicted.stem):
+            return out_path
+        new_tag = refresh_media_tag_quality(
+            tag,
+            video=mi.get("video"),
+            hdr_info=mi.get("hdr"),
+            resolution_target=cfg.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
+            container=cfg.get("container") or JOB_CONFIG_DEFAULTS["container"],
+            settings=self._naming_settings(cfg),
+            hdr_override=actual_hdr,
+        )
+        job["media_tag"] = new_tag
+        desired = Path(default_output_path(job["input_path"], cfg, new_tag))
+        if desired.stem == predicted.stem:
+            return out_path  # the template has no [hdr] token
+        with self._lock:
+            reserved = self._reserved_output_paths(exclude_job_id=job_id)
+        new_path = Path(allocate_unique_output_path(desired, reserved=reserved))
+        append_log(
+            f"Output HDR is {actual_hdr or 'SDR'} (named {expected or 'SDR'} at queue time) "
+            f"— naming it {new_path.name}",
+            update_stage=False,
+        )
+        job["output_path"] = str(new_path)
+        self.save_queue()
+        self.emit_event("job_update", job)
+        return new_path
 
     def _execute_single_job(self, job: Dict[str, Any]):
         job_id = job["id"]
