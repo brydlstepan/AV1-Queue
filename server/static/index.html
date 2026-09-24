@@ -40,7 +40,7 @@
             </div>
             <div class="spec-row">
               <span class="spec-key">Video Codec:</span>
-              <span class="spec-val">AV1 (SVT-AV1-Tritium)</span>
+              <span class="spec-val">AV1 (HandBrake · SVT-AV1-Tritium)</span>
             </div>
             <div class="spec-row">
               <span class="spec-key">GPU Acceleration:</span>
@@ -103,7 +103,7 @@
             <div class="stepper-wrapper">
               <div class="step-node" id="step1">
                 <div class="step-circle">1</div>
-                <div class="step-lbl">Audio & HDR</div>
+                <div class="step-lbl">Prepare</div>
               </div>
               <div class="step-line" id="line1"></div>
               <div class="step-node" id="step2">
@@ -515,7 +515,7 @@ Default: PSNR</span>
                   <span class="setting-label-text">Autocrop black bars</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">Detects and removes letterboxing / pillarboxing before encode when enabled.</span>
+                    <span class="setting-help-tip" role="tooltip">HandBrake detects and removes letterboxing / pillarboxing in conservative mode: it samples 30 frames across the title and keeps the least crop, so a film that switches aspect ratio (e.g. IMAX scenes) keeps its full frame. It also corrects a Dolby Vision RPU for the crop.</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAutocrop" title="Reset to default (On)" aria-label="Reset to default">↺</button>
@@ -526,28 +526,12 @@ Default: PSNR</span>
                   </button>
                 </div>
               </div>
-              <div class="setting-row is-default" data-pipeline-key="hdrStrict">
-                <label class="setting-label" for="globalHdrStrict">
-                  <span class="setting-label-text">Fail when HDR metadata cannot be preserved</span>
-                  <span class="setting-help" tabindex="0" aria-label="Help">
-                    <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">Dolby Vision / HDR10+ sources are checked before the encode starts: the SVT binary must accept --dolby-vision-rpu / --hdr10plus-json, the matching tool must be in bin/, and the extracted RPU / JSON must parse. If any of that fails the job stops in seconds instead of spending hours producing a plain HDR10 file named as if it were DoVi. Turn off to downgrade to HDR10 with a warning instead.</span>
-                  </span>
-                </label>
-                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalHdrStrict" title="Reset to default (On)" aria-label="Reset to default">↺</button>
-                <div class="setting-control">
-                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalHdrStrict" role="switch" aria-checked="true" data-default="true">
-                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
-                    <span class="svt-toggle-label">On</span>
-                  </button>
-                </div>
-              </div>
               <div class="setting-row is-default" data-pipeline-key="preserveDoviRpu">
                 <label class="setting-label" for="globalPreserveDoviRpu">
                   <span class="setting-label-text">Preserve Dolby Vision RPU</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">For DoVi P7/P8.1 sources (base layer already valid HDR10), extracts the raw RPU with dovi_tool and passes it unconverted to SVT-AV1-Tritium via --dolby-vision-rpu (built on libdovi, same as dovi_tool) alongside the HDR10 base layer. Non-DoVi clients read the HDR10 layer and ignore the RPU, so this never hurts compatibility — it only helps DoVi-capable AV1 clients, which are still rare today. On any job where Autocrop actually crops the frame, the RPU's active-area metadata is corrected first via dovi_tool editor ({"active_area":{"crop":true}}, the documented fix for a video with no letterbox bars) so it matches the cropped picture; if that correction itself fails, RPU passthrough falls back to HDR10-only for that job. P5 sources still can't be helped by this and are always skipped; requires bin/dovi_tool.exe (installed by setup) and a matching SVT-AV1-Tritium build.</span>
+                    <span class="setting-help-tip" role="tooltip">For DoVi P7/P8.1 sources (base layer already valid HDR10), HandBrake carries the Dolby Vision RPU into the AV1 encode alongside the HDR10 base layer (--hdr-dynamic-metadata). A P7 RPU is rewritten to profile 8.1, since the enhancement layer isn't encoded, and the RPU's active area is corrected when Autocrop crops the frame. Non-DoVi clients read the HDR10 layer and ignore the RPU, so this never hurts compatibility — it only helps DoVi-capable AV1 clients, which are still rare today. Best-effort: if the output ends up without it, the job still completes as HDR10 with a warning. P5 sources can't be helped by this and are always skipped. Off: HandBrake discards the RPU (HDR10+ is still kept).</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default pipeline-reset" data-target="globalPreserveDoviRpu" title="Reset to default (On)" aria-label="Reset to default">↺</button>

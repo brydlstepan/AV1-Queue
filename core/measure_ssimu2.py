@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare source vs encoded IVF/MP4 and print average SSIMULACRA2 as JSON."""
+"""Compare source vs encoded MP4/WebM and print average SSIMULACRA2 as JSON."""
 
 from __future__ import annotations
 

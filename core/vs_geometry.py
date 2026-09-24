@@ -1,9 +1,9 @@
 """
 Shared VapourSynth crop/resize helpers.
 
-Used by both core/svt_encode.py (the actual encode) and core/measure_ssimu2.py
-(the post-encode quality check) so the two can never silently drift apart on
-geometry — a mismatch here would invalidate the SSIMU2 score without error.
+Used by core/measure_ssimu2.py (the post-encode quality check) to reproduce the
+crop / downscale HandBrake applied to the encode (--crop, --maxHeight), so the
+two compare the same geometry — a mismatch would skew the score without error.
 """
 
 from __future__ import annotations

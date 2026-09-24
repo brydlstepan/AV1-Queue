@@ -1,16 +1,16 @@
 # AV1 Queue
 
-Local **AV1 encoding queue** with a browser UI. Wraps [SVT-AV1-Tritium](https://github.com/Uranite/svt-av1-tritium) direct single-pass encoding into a FastAPI backend plus a dark web frontend for batch jobs, presets, audio selection, HDR/DoVi handling, and live progress.
+Local **AV1 encoding queue** with a browser UI. Drives [HandBrakeCLI built with SVT-AV1-Tritium](https://github.com/Uranite/HandBrake-SVT-AV1-Tritium) (single-pass) from a FastAPI backend plus a dark web frontend for batch jobs, presets, audio selection, HDR/DoVi handling, and live progress.
 
 ---
 
 ## Features
 
-- **Single-pass encode** — VapourSynth source load/crop/resize → direct SVT-AV1-Tritium encode (no fast pass, no metrics stage, no CRF zones)
+- **Single-pass encode** — HandBrakeCLI with SVT-AV1-Tritium does crop/resize, encode, HDR10+ / Dolby Vision passthrough, audio and mux in one process (no fast pass, no metrics stage, no CRF zones)
 - **Queue studio** — Drag/drop or browse files, reorder, start/stop, edit queued jobs, reset cancelled/failed jobs
-- **Presets** — CRF/preset/tune, Opus bitrates, SVT-AV1-Tritium advanced params (non-defaults → `--svt-params`)
+- **Presets** — CRF/preset/tune, Opus bitrates, SVT-AV1-Tritium advanced params (non-defaults → HandBrake `-x` encoder options)
 - **Audio** — Preferred languages + best-track-only in presets; Opus 5.1 (incl. 7.1 downmix) / stereo; video-only if none selected
-- **HDR / Dolby Vision** — See [Format philosophy → HDR & Dolby Vision](#hdr--dolby-vision) (HDR10 / HLG / HDR10+ passthrough; DoVi base layer → HDR10, with DoVi RPU passthrough via `dovi_tool` on by default; P5 skipped; P4 / unconfirmed filename-DoVi / unknown profile-compat quarantined)
+- **HDR / Dolby Vision** — See [Format philosophy → HDR & Dolby Vision](#hdr--dolby-vision) (HDR10 / HLG / HDR10+ passthrough; DoVi base layer → HDR10, with DoVi RPU passthrough on by default; P5 skipped; P4 / unconfirmed filename-DoVi / unknown profile-compat quarantined)
 
 - **Test mode** — Short time-range encodes for quick preset checks
 - **Pipeline options** — SSIMU2 CPU/GPU/auto, autocrop, optional post-encode score, background subtitle extract after encode
@@ -26,11 +26,9 @@ Local **AV1 encoding queue** with a browser UI. Wraps [SVT-AV1-Tritium](https://
 | UI | Vanilla HTML / CSS / JS (`server/static/`) |
 | API | **FastAPI** + **Uvicorn**, REST + WebSocket (`/ws/live`) |
 | Queue | Python `QueueManager` (`core/queue_manager.py`) |
-| Encode | **SvtAv1EncApp** (SVT-AV1-Tritium), direct single-pass |
-| Video filter graph | **VapourSynth** + **FFMS2**, **vszip** (CPU metrics), **Vship** (NVIDIA GPU metrics) |
-| Mux / audio / probe | **FFmpeg** / **ffprobe** (libopus) |
-| HDR10+ passthrough | **hdr10plus_tool** (quietvoid) extracts the HDR10+ JSON; SVT-AV1-Tritium injects it via `--hdr10plus-json` (ships enabled by default in Tritium's prebuilt Windows binaries) |
-| Dolby Vision RPU passthrough | **dovi_tool** (quietvoid) extracts the RPU (`extract-rpu`; P7 / P8-compat-6 sources are rewritten to profile 8.1 with `-m 2` first, like HandBrake, everything else passes through unconverted); SVT-AV1-Tritium injects it via `--dolby-vision-rpu` (uses `libdovi`, the same library dovi_tool is built on, to pack it into the AV1 bitstream). On by default — see [Settings → Preserve Dolby Vision RPU](#hdr--dolby-vision) |
+| Encode | **HandBrakeCLI** built with **SVT-AV1-Tritium** (`bin/handbrake/`), single-pass — encode, HDR10+ / Dolby Vision passthrough, Opus / E-AC-3 audio, MP4 / WebM mux |
+| Probe / test segments / subtitles | **FFmpeg** / **ffprobe** |
+| Quality metrics (optional) | **VapourSynth** + **FFMS2**, **vszip** (CPU), **Vship** (NVIDIA GPU) — post-encode SSIMU2 |
 | System metrics | **psutil** |
 
 Python packages (installed into `vs/python-env/` by setup from `requirements.txt`): `fastapi`, `uvicorn[standard]`, `websockets`, `psutil`, `vapoursynth`, `vstools`, `vsjetpack`, `rich`, `py7zr`, …
@@ -92,17 +90,16 @@ Or run it in the foreground with a visible console (for debugging — live log o
 AV1-Queue/
 ├── setup.bat                  # Double-click installer (console stays open)
 ├── runGUI.bat                 # Launch server as a background tray-icon process
-├── bin/                       # ffmpeg, ffprobe, hdr10plus_tool, dovi_tool; SVT under bin/svt/
+├── bin/                       # ffmpeg, ffprobe; HandBrakeCLI under bin/handbrake/
 ├── vs/
 │   ├── portable.vs
 │   ├── python-env/            # Isolated Python venv (VS plugins also autoload here)
 │   └── plugins64/             # Plugin copies for PATH / DLL resolution
 ├── core/
-│   ├── svt_encode.py
-│   ├── pipeline.py            # Probe, audio, test segment, mux, cleanup
+│   ├── handbrake_encode.py    # HandBrakeCLI command builder
+│   ├── pipeline.py            # Probe, audio selection, test segment, HandBrake runner, SSIMU2, cleanup
 │   ├── queue_manager.py       # Job lifecycle & encode orchestration
-│   ├── hdr_dovi.py            # HDR / Dolby Vision helpers
-│   ├── mp4_dovi.py            # dvvC / dby1 insert for DoVi AV1-in-MP4
+│   ├── hdr_dovi.py            # HDR / Dolby Vision detection (skip policy, output check)
 │   └── measure_ssimu2.py
 ├── server/
 │   ├── app.py                 # FastAPI routes & WebSocket
@@ -116,7 +113,7 @@ AV1-Queue/
 ├── _temp/                     # Per-job working directories
 └── scripts/
     ├── setup.ps1              # Called by setup.bat
-    ├── setup_env.py           # Download binaries, plugins, venv
+    ├── setup_env.py           # Download HandBrakeCLI, FFmpeg, plugins, venv
     ├── start_queue.ps1        # Foreground launcher (visible console, for debugging)
     ├── tray_launcher.ps1      # Background launcher used by runGUI.bat (tray icon)
     └── launch_hidden.vbs      # Runs tray_launcher.ps1 with zero window flash
@@ -126,11 +123,17 @@ AV1-Queue/
 
 ## Encode stages
 
-1. **Audio** — Selected tracks → Opus by default, or E-AC-3 when the preset sets `audio_format` (or skipped for video-only)
-2. **Encode** — VapourSynth loads the source (**ffms2**), applies optional crop/resize, and pipes frames directly to **SvtAv1EncApp** (`--preset` / `--crf`, plus `--svt-params` for tune and other non-defaults; single pass, no fast pass, no metrics, no CRF zones)
-3. **Mux** — IVF + audio → MP4 (`+faststart`) or WebM; HDR10 static color tags applied via FFmpeg; HDR10+ dynamic metadata carried in the AV1 bitstream
+1. **Prepare** — HDR / Dolby Vision analysis (drives the skip / quarantine rules below), audio track selection, test-mode segment cut
+2. **Encode** — [HandBrakeCLI built with SVT-AV1-Tritium](https://github.com/Uranite/HandBrake-SVT-AV1-Tritium) in one process: autocrop, downscale, single-pass SVT-AV1-Tritium (`--encoder-preset` / `-q`, preset SVT params as `-x key=value:…`), HDR10+ / Dolby Vision passthrough (`--hdr-dynamic-metadata`), selected audio → Opus (or E-AC-3 per preset), MP4 (`+faststart`) or WebM mux. No fast pass, no metrics, no CRF zones
+3. **Verify & publish** — The output is written as `*.partial.mp4` beside the destination and only renamed into place after checking that a source that was HDR came out HDR
 4. **Subtitles (optional)** — Text tracks extracted from the **original** file next to it (`.en.srt`, etc.); runs in a **background thread** so the next queue job can start immediately
-5. **SSIMU2 (optional)** — Post-mux quality score via Vship (GPU) or vszip (CPU), when enabled in settings
+5. **SSIMU2 (optional)** — Post-encode quality score via Vship (GPU) or vszip (CPU), when enabled in settings
+
+**What the app decides vs. what HandBrake decides.** The app owns probe, the DoVi skip / quarantine policy, audio track selection and order, resolution target (`--maxHeight`, downscale only, with `--loose-anamorphic` so the width scales along and pixels stay square: a 3840×1600 source at 1080p becomes 2592×1080), test-mode segments, SSIMU2, subtitles and the watch folder. HandBrake owns autocrop, the encode itself, HDR10 static metadata, HDR10+ and Dolby Vision passthrough (including the P7 → 8.1 RPU conversion and the RPU's active-area fix after cropping), audio encoding and the container. Preset `svt_params` and the lp / low-memory settings reach the Tritium library as HandBrake encoder options under the same names SvtAv1EncApp takes. Chapters and subtitles are stripped from the output (`--no-markers`, `-s none`); audio tracks are left unnamed (`--no-keep-aname`), so players label them from language, codec and layout. HandBrake's full activity log for a job is `_temp/job_<id>/encode/handbrake.log` while it runs.
+
+**Autocrop** runs in HandBrake with `--crop-mode conservative` over 30 sampled frames (`--previews 30:0`; HandBrake's default is 10). Conservative keeps the least crop found, so a title that changes aspect ratio (IMAX sections, for example) keeps its full frame instead of losing picture. Tested on synthetic titles: with 30 samples a full-frame section only 3% of the runtime was kept; with the default 10 it was cropped away. The crop HandBrake applied is read back from its log (`parse_applied_crop`) for SSIMU2 and the job stats; if it can't be read, SSIMU2 is skipped for that job rather than scored on mismatched frames. **Settings → Autocrop black bars** off sends `--crop-mode none`.
+
+**HandBrakeCLI build.** `setup.bat` installs the x86_64 CLI from the repo's rolling `win` snapshot release and verifies it against the release's `sha256.txt`. Snapshots can change twice a week; setup never replaces an existing copy, so delete `bin/handbrake/` to move to a newer one.
 
 ---
 
@@ -154,41 +157,28 @@ Opus beats E-AC-3 on quality at a given bitrate and is royalty-free, so it's the
 
 The single rule: **can the source's base layer stand on its own?** If yes, encode it and preserve whatever dynamic metadata it carries; if no, leave the original untouched. The `dv_bl_signal_compatibility_id` ffprobe field answers this — 0 means no, anything else means yes. Profile 7 / 8.1 base layers are already valid HDR10, so they always encode as HDR10 regardless of whether the RPU is also carried. Profile 5's base layer is stored in DV's IPT-PQc2 colourspace, so tagging it HDR10 would bake in a permanent colour cast and there's no cheap conversion — so P5 sources are skipped and kept as-is, with or without RPU passthrough enabled.
 
-Since a non-DoVi player simply reads the HDR10 base layer and ignores an RPU it doesn't understand, carrying the RPU alongside costs nothing on unsupported devices and only helps on the (currently rare, likely growing) DoVi-capable AV1 clients — so it's on by default. **Settings → Preserve Dolby Vision RPU** (toggle off if you'd rather not): `dovi_tool` extracts the raw RPU and SVT-AV1-Tritium injects it into the AV1 bitstream via `--dolby-vision-rpu`, alongside the HDR10 base layer that's encoded either way. Best-effort — any failure (missing `dovi_tool`, unusable RPU, SVT rejecting it) just falls back to plain HDR10 with a log line, the same degrade-gracefully posture as HDR10+ JSON, never a hard failure. It doesn't change P5/P4/quarantine handling at all, since those rows aren't about the RPU.
+Since a non-DoVi player simply reads the HDR10 base layer and ignores an RPU it doesn't understand, carrying the RPU alongside costs nothing on unsupported devices and only helps on the (currently rare, likely growing) DoVi-capable AV1 clients — so it's on by default. **Settings → Preserve Dolby Vision RPU** (toggle off if you'd rather not) maps to HandBrake's `--hdr-dynamic-metadata all` (on) or `hdr10plus` (off). Best-effort — if the output ends up without Dolby Vision the job still completes as HDR10 with a warning, never a hard failure. It doesn't change P5/P4/quarantine handling at all, since those rows aren't about the RPU.
 
 | Source | Base layer standalone? | Output (RPU passthrough off) | Output (RPU passthrough on, default) |
 |--------|------------------------|----------------------------------------|-------------------------------|
 | SDR (BT.709) | yes | SDR AV1 | unchanged (no DoVi to carry) |
 | HLG | yes | HLG AV1 (ARIB B67 transfer preserved) | unchanged |
-| HDR10 (static) | yes | HDR10 AV1 (MDL + MaxCLL/MaxFALL passed to SVT) | unchanged |
-| HDR10+ | yes | **HDR10+ AV1** (`--hdr10plus-json` passthrough) | unchanged |
-| DoVi P8.1 / P7 | yes | HDR10 AV1 — base layer encoded, RPU discarded | HDR10 AV1 **+ DoVi RPU** (`--dolby-vision-rpu`); non-DoVi clients still just see the HDR10 layer |
-| DoVi P8.1 / P7 + HDR10+ | yes | HDR10+ AV1 — RPU discarded, HDR10+ JSON kept | HDR10+ AV1 **+ DoVi RPU** — both metadata tracks carried |
+| HDR10 (static) | yes | HDR10 AV1 (MDL + MaxCLL/MaxFALL carried by HandBrake) | unchanged |
+| HDR10+ | yes | **HDR10+ AV1** (HandBrake passthrough) | unchanged |
+| DoVi P8.1 / P7 | yes | HDR10 AV1 — base layer encoded, RPU discarded | HDR10 AV1 **+ DoVi RPU** (P7 rewritten to 8.1); non-DoVi clients still just see the HDR10 layer |
+| DoVi P8.1 / P7 + HDR10+ | yes | HDR10+ AV1 — RPU discarded, HDR10+ kept | HDR10+ AV1 **+ DoVi RPU** — both metadata tracks carried |
 | DoVi **P5** (compat 0) | **no** | **skipped** — original file left untouched | unchanged — RPU passthrough can't help; the base layer itself isn't valid HDR10 |
 | DoVi P4 (legacy) | unknown | **quarantined** for manual review | unchanged |
 | Filename says DoVi, not probe-confirmed | unknown | **quarantined** — P5 cannot be ruled out | unchanged |
 | DoVi confirmed, profile/compat unknown | unknown | **quarantined** for manual review | unchanged |
 
-#### HDR10+ passthrough
+#### HDR10+ and Dolby Vision passthrough
 
-HDR10+ can be carried through but not created. It needs both a libhdr10plus-enabled SVT-AV1-Tritium binary (`--hdr10plus-json`, shipped by default in Tritium's Windows releases) and the HDR10+ JSON extracted by `hdr10plus_tool` from frame SEI. If either is missing, an HDR10+ source encodes as plain HDR10 (or fails preflight when "Fail when HDR metadata cannot be preserved" is on).
+Both are HandBrake's: it reads the HDR10+ SEI and the Dolby Vision RPU from the source, writes them into the AV1 stream, and signals Dolby Vision in the MP4 container. It applies the same rules this app used to implement itself: a profile-7 RPU (or profile 8 with Blu-ray compat id 6) is rewritten to profile 8.1 because the enhancement layer isn't encoded (FEL detail is discarded), and after a crop the RPU's active area is corrected to match the cropped picture. WebM cannot signal Dolby Vision.
 
-#### Dolby Vision RPU passthrough
+**What's checked afterwards:** a source that was HDR must come out HDR, or the output is discarded and the job fails. Dolby Vision missing from the output only warns, since it's best-effort. HDR10+ can't be confirmed afterwards (the bundled ffprobe can't read AV1 frame metadata), so HandBrake is trusted to carry it, and the job log says so.
 
-On by default; toggle off via **Settings → Preserve Dolby Vision RPU** if you don't want it. Needs `bin/dovi_tool.exe` (installed by `setup_env.py`, same as `hdr10plus_tool` — quietvoid's release assets) and an SVT-AV1-Tritium build with `--dolby-vision-rpu` (`enable-libdovi`, on by default in Tritium's Windows releases). The RPU is extracted with `dovi_tool extract-rpu` and handed to SVT, whose `--dolby-vision-rpu` is built on `libdovi` (the same library `dovi_tool` uses) and does the AV1 packing itself. The RPU is **rewritten to profile 8.1 first** (`dovi_tool -m 2`) when the source is profile 7, or profile 8 with Blu-ray compat id 6 — the same rule HandBrake applies. The AV1 encode carries only the base layer, so an untouched P7 RPU (which still describes an enhancement layer's residual / NLQ mapping) would describe something that isn't in the stream. Other sources (P8.1 and the like) are passed through unconverted; mode 2 is deliberately not applied to them, since on a compat-id-4 (HLG) 8.4 RPU it would turn it into a PQ one. For a P7 source the enhancement layer (FEL detail) is discarded, exactly as in HandBrake's output. Never blocks a job — HDR strict mode does not apply to it, since the worst case (RPU unavailable) is identical to the feature being off.
-
-The HDR10+ JSON and the RPU are extracted in **one streamed read** of the source's video track: ffmpeg demuxes it to annex-B HEVC on stdout and pipes it straight into `hdr10plus_tool` / `dovi_tool` (both read `-`), whatever the container. Nothing is written to `_temp`, so a large MP4 / M2TS remux isn't first copied in full to the project drive, and a source carrying both kinds of metadata is read once, not twice. The progress bar tracks ffmpeg's position up to 90%. The rest is the tools post-processing every frame's metadata after the read finishes, which on a long film can take a while.
-
-**Autocrop interaction:** the RPU is extracted from the *uncropped* source, before autocrop runs. A DoVi RPU carries frame-geometry-dependent metadata (active area / L5-L8 trims), so injecting it unmodified alongside a frame that autocrop actually cropped would describe geometry that no longer matches the encoded picture. When autocrop detects and applies a non-zero crop on an RPU-passthrough job, `dovi_tool editor` corrects the RPU's active area first — `{"active_area": {"crop": true}}`, quietvoid's documented fix for exactly this case ("should be set to true when final video has no letterbox bars") — and the corrected RPU is what actually gets injected. If that correction step itself fails, RPU passthrough falls back to dropped/HDR10-only for that job rather than injecting something unverified. A source with no black bars needs no correction and encodes with the extracted RPU as-is.
-
-**Container signalling (MP4):** the RPU in the bitstream is not enough on its own — players decide an MP4 is Dolby Vision from a `dvvC` box on the `av01` sample entry (plus the `dby1` brand), and read HDR10 static metadata from `mdcv` / `clli` boxes. ffmpeg's MP4 muxer writes none of these from a raw IVF, so the mux step adds them (compared against a HandBrake SVT-AV1 DoVi encode of the same source, which carries the identical boxes):
-
-- `mdcv` / `clli` — ffmpeg's `-mastering_display` / `-content_light` *input* options (`ffmpeg_hdr_input_args` in `core/hdr_dovi.py`). Applies to every HDR job, WebM included.
-- `dvvC` + `dby1` — inserted after the mux by `core/mp4_dovi.py` (ffmpeg has no CLI option for a DoVi config record). Written as profile 10, compat id 1 (HDR10 base layer), RPU + base layer present; level derived the way HandBrake does (lowest DV level covering the pixel rate, width, and the AV1 level's bitrate cap). Only when the RPU actually went into the encode; a failure or an unsupported MP4 layout leaves the plain HDR10 file, with a log line. WebM cannot signal DoVi.
-
-Verified on a DoVi P8 (compat id 6) source: the muxed MP4's video/audio packets are byte-identical before and after the box insert, and the DoVi record, `mdcv` and `clli` match HandBrake's output. The P7 → 8.1 conversion was checked on a synthesized profile-7 (MEL) RPU injected into that source's HEVC: without `-m 2` the extracted RPU stays profile 7 with residual/NLQ enabled; with it the result is byte-identical to the true 8.1 RPU. No real dual-layer P7 disc rip has been run through the full pipeline.
-
-**Chroma siting:** the source's 4:2:0 chroma location is passed as SVT `--chroma-sample-position` (`left` → `vertical`, `topleft` → `colocated`, the same mapping HandBrake uses), so the AV1 sequence header matches the source instead of saying "unknown". Applies to SDR and HDR alike; other locations stay unknown.
+**Chroma siting:** the source's 4:2:0 chroma location is passed as the SVT `chroma-sample-position` option (`left` → `vertical`, `topleft` → `colocated`), since HandBrake otherwise leaves it unset, so the AV1 sequence header matches the source instead of saying "unknown". Applies to SDR and HDR alike; other locations stay unknown.
 
 #### Sourcing guidance
 
@@ -200,13 +190,12 @@ Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8
 
 | Project | Role | Link |
 |---------|------|------|
-| SVT-AV1-Tritium | AV1 encoder (direct single-pass, HDR10+/DoVi RPU passthrough) | [Uranite/svt-av1-tritium](https://github.com/Uranite/svt-av1-tritium) |
-| hdr10plus_tool | HDR10+ JSON extract / verify | [quietvoid/hdr10plus_tool](https://github.com/quietvoid/hdr10plus_tool) |
-| dovi_tool | Dolby Vision RPU extract (passthrough, on by default) | [quietvoid/dovi_tool](https://github.com/quietvoid/dovi_tool) |
-| FFmpeg | Decode, Opus, mux | [GyanD/codexffmpeg](https://github.com/GyanD/codexffmpeg) (essentials build used by setup) |
+| HandBrake-SVT-AV1-Tritium | Encoder: HandBrakeCLI built with SVT-AV1-Tritium | [Uranite/HandBrake-SVT-AV1-Tritium](https://github.com/Uranite/HandBrake-SVT-AV1-Tritium) |
+| SVT-AV1-Tritium | The AV1 encoder library inside that HandBrake build | [Uranite/svt-av1-tritium](https://github.com/Uranite/svt-av1-tritium) |
+| FFmpeg | Probe, test segments, subtitle extraction | [GyanD/codexffmpeg](https://github.com/GyanD/codexffmpeg) (essentials build used by setup) |
 | Vship | GPU SSIMULACRA2 | [Line-fr/Vship](https://codeberg.org/Line-fr/Vship) |
 | vapoursynth-zip (vszip) | CPU metrics | [dnjulek/vapoursynth-zip](https://github.com/dnjulek/vapoursynth-zip) |
-| FFMS2 | Source filter for VS | [FFMS/ffms2](https://github.com/FFMS/ffms2) |
+| FFMS2 | Source filter for VS (SSIMU2) | [FFMS/ffms2](https://github.com/FFMS/ffms2) |
 | VapourSynth / vstools | Scripting / helpers | [vapoursynth](https://www.vapoursynth.com/), [vsjetpack](https://github.com/Jaded-Encoding-Thaumaturgy/vs-jetpack) |
 
 `scripts/setup_env.py` pulls current Windows assets from these release APIs where possible.
@@ -215,7 +204,7 @@ Prefer at acquisition, best first: HDR10+ (passes through intact) → DV P7 / P8
 
 ## Configuration notes
 
-- **Presets** — Individual JSON files under `server/presets/builtin/` (git-tracked) and `server/presets/local/` (UI-created, gitignored). Each has `crf` / `preset` plus advanced SVT overrides as `svt_params`, merged into the `--svt-params` passed to `core/svt_encode.py`. Built-in presets are read-only in the UI unless **Settings → App → Enable built-in preset edits** is on. The preset editor shows a live **command preview** of non-default SVT flags.
+- **Presets** — Individual JSON files under `server/presets/builtin/` (git-tracked) and `server/presets/local/` (UI-created, gitignored). Each has `crf` / `preset` plus advanced SVT overrides as `svt_params`, passed to HandBrake as `-x key=value:…` encoder options (`core/handbrake_encode.py`). Built-in presets are read-only in the UI unless **Settings → App → Enable built-in preset edits** is on. The preset editor shows a live preview of the non-default encoder options.
 - **Queue** — Survives restarts via `server/queue.json`. Cancelled/failed jobs can be **Reset** back to queued.
 - **Test mode** — Global toggle + duration settings in the UI; jobs can run a short trim instead of the full file.
 - **Audio defaults** — On add, empty selection falls back to English/Czech heuristics. Explicit empty selection in the job editor means video-only.

@@ -35,19 +35,18 @@ from core.presets_store import (
     load_presets,
     save_preset_file,
 )
-from core.svt_binary import ensure_svt_binary, get_svt_status
+from core.handbrake_encode import handbrake_available
 from core.watch_folder import WatchFolderService
 
 # Connected WebSocket clients
 active_websockets: List[WebSocket] = []
 loop = None
-_svt_startup: Dict[str, Any] = {}
 _watch_service: Optional[WatchFolderService] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global loop, _svt_startup
+    global loop
     loop = asyncio.get_running_loop()
     try:
         from core.win_process import boost_current_process
@@ -55,11 +54,8 @@ async def lifespan(app: FastAPI):
             print("[qos] Server process opted out of Windows EcoQoS / power throttling")
     except Exception as e:
         print(f"[qos] Could not adjust process QoS: {e}")
-    try:
-        _svt_startup = ensure_svt_binary(BASE_DIR / "bin")
-    except Exception as e:
-        print(f"[svt] Startup binary select failed: {e}")
-        _svt_startup = {"ok": False, "message": str(e)}
+    if not handbrake_available():
+        print("[!] bin/handbrake/HandBrakeCLI.exe is missing — run setup.bat; encodes will fail until it's installed")
     _restart_watch_service()
     yield
     global _watch_service
@@ -220,7 +216,7 @@ class PresetModel(BaseModel):
     audio_languages: Optional[List[str]] = None
     # If true, auto-select only the best track when a language has multiples
     audio_best_only: Optional[bool] = True
-    # Non-default SVT-AV1-Tritium overrides → --svt-params
+    # Non-default SVT-AV1-Tritium overrides → HandBrake -x encoder options
     svt_params: Optional[Dict[str, Any]] = None
 
 
@@ -241,7 +237,6 @@ class SettingsUpdateRequest(BaseModel):
     svt_lp: Optional[int] = None
     svt_low_memory: Optional[bool] = None
     ssimu2_target: Optional[float] = None
-    hdr_strict: Optional[bool] = None
     preserve_dovi_rpu: Optional[bool] = None
     tmdb_lookup: Optional[bool] = None
     tmdb_api_key: Optional[str] = None
@@ -575,9 +570,7 @@ async def probe_file(
 
 
 _GPU_POLL_SECONDS = 6.0
-_SVT_POLL_SECONDS = 30.0
 _gpu_cache = {"at": 0.0, "value": None}
-_svt_cache = {"at": 0.0, "value": None}
 
 
 def _query_gpu():
@@ -609,24 +602,11 @@ def _query_gpu():
     return gpu_info
 
 
-def _cached_svt_status():
-    """get_svt_status() re-reads the marker, globs bin/svt and can query the CPU
-    name from the registry. It only changes when the binary is swapped."""
-    now = time.monotonic()
-    if _svt_cache["value"] is not None and now - _svt_cache["at"] < _SVT_POLL_SECONDS:
-        return _svt_cache["value"]
-    value = get_svt_status()
-    _svt_cache["at"] = now
-    _svt_cache["value"] = value
-    return value
-
-
 @app.get("/api/system")
 async def get_system_stats():
     cpu_pct = psutil.cpu_percent(interval=None)
     ram = psutil.virtual_memory()
     gpu_info = _query_gpu()
-    svt = _cached_svt_status()
     return {
         "cpu_percent": cpu_pct,
         "cpu_logical": psutil.cpu_count(logical=True) or 0,
@@ -635,8 +615,7 @@ async def get_system_stats():
         "ram_used_gb": round(ram.used / (1024**3), 1),
         "ram_total_gb": round(ram.total / (1024**3), 1),
         "gpu": gpu_info,
-        "svt": svt,
-        "svt_caps": svt.get("caps") or {},
+        "handbrake_available": handbrake_available(),
     }
 
 

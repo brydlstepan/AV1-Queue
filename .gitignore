@@ -15,14 +15,6 @@ queue.json
 bin/*
 vs/
 
-# SVT-AV1-Tritium build variants ARE committed, so a fresh clone has a
-# working encoder without depending on setup_env.py's GitHub Release fetch.
-# (A parent dir excluded via bin/* must be re-included at every level for a
-# nested negation to take effect — git won't descend into an ignored dir.)
-!bin/svt/
-bin/svt/*
-!bin/svt/*.exe
-
 # --- Python ---
 __pycache__/
 *.py[cod]
