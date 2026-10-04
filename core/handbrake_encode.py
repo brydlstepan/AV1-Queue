@@ -124,6 +124,53 @@ def parse_applied_crop(log_text: str) -> Optional[Dict[str, int]]:
     return None
 
 
+# Lines worth surfacing from a *successful* encode's activity log. HandBrake
+# finishes even when the SVT library rejects an option ("error parsing option
+# …"), so a typo'd or outdated preset option is otherwise lost silently.
+_HB_NOTABLE_RE = re.compile(
+    r"error parsing option|Svt\[(?:warn|error|fatal)\]|\bwarning\b|\berror:",
+    re.I,
+)
+_HB_DECODER_RE = re.compile(r"(\S+)-decoder done: (\d+) frames, (\d+) decoder errors")
+_HB_FRAMES_RE = re.compile(r"vfr: (\d+) frames output, (\d+) dropped")
+_HB_TIMESTAMP_RE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]\s*")
+
+
+def summarize_handbrake_log(log_text: str, max_notes: int = 15) -> Dict[str, Any]:
+    """
+    {notes, frames, dropped} from a HandBrake activity log. notes are the
+    warning / error lines (timestamps stripped, de-duplicated, capped), plus
+    one per decoder that reported errors; frames / dropped come from the
+    "vfr:" summary (None when absent).
+    """
+    notes: List[str] = []
+    seen = set()
+    frames = dropped = None
+    for raw in (log_text or "").splitlines():
+        line = _HB_TIMESTAMP_RE.sub("", raw).strip()
+        if not line:
+            continue
+        m = _HB_DECODER_RE.search(line)
+        if m:
+            if int(m.group(3)):
+                note = f"{m.group(1)} decoder: {m.group(3)} errors in {m.group(2)} frames"
+                if note not in seen:
+                    seen.add(note)
+                    notes.append(note)
+            continue
+        m = _HB_FRAMES_RE.search(line)
+        if m:
+            frames, dropped = int(m.group(1)), int(m.group(2))
+            continue
+        if _HB_NOTABLE_RE.search(line) and line not in seen:
+            seen.add(line)
+            notes.append(line)
+    if len(notes) > max_notes:
+        extra = len(notes) - max_notes
+        notes = notes[:max_notes] + [f"… and {extra} more (see the HandBrake log)"]
+    return {"notes": notes, "frames": frames, "dropped": dropped}
+
+
 def build_handbrake_command(
     input_file: Path,
     output_file: Path,
