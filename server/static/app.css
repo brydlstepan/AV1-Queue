@@ -2965,3 +2965,27 @@ select.form-input {
   background: var(--bg-level-1);
   color: var(--text-main);
 }
+
+/* Text input + "…" folder-browse button (watch-folder settings) */
+.input-with-browse {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  width: 100%;
+}
+
+.input-with-browse .form-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.btn-browse-folder {
+  flex: 0 0 auto;
+  padding: 0 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.folder-picker-actions {
+  gap: 10px;
+}
