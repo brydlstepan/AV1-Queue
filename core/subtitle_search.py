@@ -66,7 +66,7 @@ def _http_json(
 
 def _lang_to_os(code: str) -> str:
     """Map our ISO-ish codes to OpenSubtitles 2-letter language codes."""
-    return iso6391(code) or "en"
+    return iso6391(code)
 
 
 def compute_opensubtitles_hash(path: Path) -> Optional[Tuple[str, int]]:
@@ -304,7 +304,9 @@ def search_subtitles(
     elif imdb_id:
         iid = str(imdb_id).lower().replace("tt", "").strip()
         if iid:
-            params["imdb_id"] = iid
+            # An episode's tag carries the show's id; OpenSubtitles reads
+            # imdb_id as the episode's own id, the show's is parent_imdb_id
+            params["parent_imdb_id" if media_type == "episode" else "imdb_id"] = iid
         else:
             return []
     elif query:
@@ -499,8 +501,9 @@ def search_and_download_missing(
     Matching priority for timing:
       1) OpenSubtitles moviehash of the source file (exact release)
       2) FPS close to the source
-      3) Overlap between subtitle release name and source filename
-         (BluRay/REMUX preferred over WEB-DL when the source is a disc rip)
+      3) Overlap between subtitle release name and release_hint (the source
+         filename plus its container title, which keeps the release name of
+         a renamed file); BluRay/REMUX preferred over WEB-DL for a disc rip
       4) IMDb / title search as the discovery fallback
     """
     def log(msg: str):

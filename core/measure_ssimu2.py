@@ -122,7 +122,8 @@ def main() -> int:
             scores[n] = float(f.props.get("SSIMULACRA2"))
 
     clip_async_render(result, outfile=None, progress=None, callback=collect)
-    del result, source, encoded
+    # Drop the clips before gc (rebinding, not del: try_gpu/try_cpu close over them)
+    result = source = encoded = None
     gc.collect()
 
     # Drop frames that failed to score (NaN). Flooring them to 0.0 instead would

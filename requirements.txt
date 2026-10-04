@@ -1,11 +1,10 @@
 # Python packages for vs/python-env (installed by scripts/setup_env.py).
-# Keep in sync with setup — prefer editing this file and letting setup install -r.
+# The only package list — setup installs it with pip install -r.
 
 wheel
 setuptools
 vapoursynth
-vstools
-vsjetpack
+vsjetpack  # provides the vstools module (the vstools package is now just an alias for it)
 fastapi
 uvicorn[standard]
 websockets

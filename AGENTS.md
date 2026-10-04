@@ -50,7 +50,7 @@ These are product decisions, not preferences:
   - DoVi P7 / P8.1 → always encode base as HDR10; HandBrake carries the RPU by default (`--hdr-dynamic-metadata all`, P7 → 8.1; **Settings → Preserve Dolby Vision RPU**, best-effort — never blocks a job; toggle off to always discard it)
   - HDR10+ → HandBrake passthrough (not verifiable afterwards — bundled ffprobe can't read AV1 frame metadata)
   - HDR source whose output isn't HDR → output discarded, job fails
-- Chapters/subtitles are stripped from the output; audio tracks are left unnamed (sidecars are separate)
+- Chapters/subtitles and the source's container metadata (e.g. its release-name title) are stripped from the output; audio tracks are left unnamed (sidecars are separate)
 
 Full tables and rationale: README → *Format philosophy* → *HDR & Dolby Vision*.
 

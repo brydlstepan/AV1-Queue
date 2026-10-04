@@ -160,6 +160,15 @@ def _resolved_str(path: Optional[str]) -> str:
         return str(path)
 
 
+def _container_title(fmt: Optional[Dict[str, Any]]) -> str:
+    """The source container's title tag (ffprobe format tags; MKV may say TITLE)."""
+    tags = (fmt or {}).get("tags") or {}
+    for k, v in tags.items():
+        if str(k).lower() == "title":
+            return str(v or "").strip()
+    return ""
+
+
 def default_output_path(input_path: str, config: Optional[Dict[str, Any]] = None,
                         media_tag: Optional[Dict[str, Any]] = None) -> str:
     """Build the usual output filename next to the source (test vs full encode)."""
@@ -446,7 +455,10 @@ class QueueManager:
                 "video": media["video"],
                 "audio_tracks": media["audio_tracks"],
                 "subtitle_tracks": media["subtitle_tracks"],
-                "hdr": hdr_info
+                "hdr": hdr_info,
+                # Container title — usually the scene release name even when the
+                # file was renamed; ranks OpenSubtitles results by release
+                "source_title": _container_title(media.get("format")),
             },
             "media_tag": media_tag,
             "config": default_config,
@@ -985,7 +997,12 @@ class QueueManager:
         if cancelled:
             # Keep in queue for Reset — do not move to Finished.
             self.save_queue()
-            self.emit_event("job_update", job)
+            # Unless the cancel was the job being deleted: an update for it now
+            # would make the UI add the removed job back as a ghost card.
+            with self._lock:
+                still_queued = any(j["id"] == job_id for j in self.jobs)
+            if still_queued:
+                self.emit_event("job_update", job)
             print(f"[!] Job {job_id} cancelled: {error}")
             return
         self._move_watch_source(job, "failed")
@@ -1724,7 +1741,13 @@ class QueueManager:
                                     media_kind=tag.get("media_kind"),
                                     season=season_i,
                                     episode=episode_i,
-                                    release_hint=src_for_subs.name,
+                                    # Filename + container title: a renamed
+                                    # library file keeps its release name
+                                    # (BluRay / REMUX / group) only in the title
+                                    release_hint=" ".join(filter(None, (
+                                        src_for_subs.name,
+                                        (job.get("media_info") or {}).get("source_title"),
+                                    ))),
                                 )
                                 self.emit_event("subtitle_search", {
                                     "id": jid,
