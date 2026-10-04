@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=pass39">
+  <link rel="stylesheet" href="/static/app.css?v=pass40">
 </head>
 <body>
   <div class="app-container">
@@ -979,7 +979,10 @@ Default: PSNR</span>
                   </label>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="settingsWatchFolderOutputPath" class="form-input" placeholder="e.g. D:\Encoded (blank = watched folder\encoded)" autocomplete="off">
+                  <div class="input-with-browse">
+                    <input type="text" id="settingsWatchFolderOutputPath" class="form-input" placeholder="e.g. D:\Encoded (blank = watched folder\encoded)" autocomplete="off">
+                    <button type="button" class="btn btn-outline btn-browse-folder" data-target="settingsWatchFolderOutputPath" data-title="Select Output Folder" title="Browse…" aria-label="Browse for output folder">…</button>
+                  </div>
                 </div>
               </div>
               <div class="setting-row is-default" data-pipeline-key="watchFolderEnabled">
@@ -987,7 +990,7 @@ Default: PSNR</span>
                   <span class="setting-label-text">Watch folder auto-queue</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">Watches a folder for new video files and queues them automatically, in place. A filename containing "preset-&lt;id&gt;" (e.g. movie.preset-4k_standard.mkv) selects that preset; otherwise the default preset below is used. The finished AV1 file is written to the output folder above (or an encoded subfolder when left blank); once that output is verified, the original source is moved into an encoded_sources subfolder.</span>
+                    <span class="setting-help-tip" role="tooltip">Watches a folder for new video files and queues them automatically, in place. A filename containing "preset-&lt;id&gt;" (e.g. movie.preset-4k_standard.mkv) selects that preset; otherwise the default preset below is used. The finished AV1 file is written to the output folder above (or an encoded subfolder when left blank); once that output is verified, the original source is moved into an encoded_sources subfolder. A source whose job fails is moved to failed/, one skipped by the Dolby Vision policy to skipped/; Test Mode encodes leave the source in place.</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default pipeline-reset" data-target="globalWatchFolderEnabled" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
@@ -1009,7 +1012,10 @@ Default: PSNR</span>
                   </label>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="settingsWatchFolderPath" class="form-input" placeholder="e.g. D:\Incoming" autocomplete="off">
+                  <div class="input-with-browse">
+                    <input type="text" id="settingsWatchFolderPath" class="form-input" placeholder="e.g. D:\Incoming" autocomplete="off">
+                    <button type="button" class="btn btn-outline btn-browse-folder" data-target="settingsWatchFolderPath" data-title="Select Watched Folder" title="Browse…" aria-label="Browse for watched folder">…</button>
+                  </div>
                 </div>
               </div>
               <div class="setting-row setting-row--stack" data-pipeline-key="watchFolderPreset">
@@ -1150,6 +1156,27 @@ Default: PSNR</span>
       </div>
     </div>
 
+    <!-- Folder picker (server-side folders, for the watch-folder settings) -->
+    <div class="modal-backdrop hidden" id="folderPickerModal">
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3 id="folderPickerTitle">Select Folder</h3>
+          <button class="modal-close" id="btnFolderPickerClose">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="browser-nav">
+            <button class="btn btn-sm btn-outline" id="btnFolderPickerUp">⬆ Up</button>
+            <div class="current-path-display" id="folderPickerPath">This PC</div>
+          </div>
+          <div class="browser-items-list scroll-thin" id="folderPickerList"></div>
+          <div class="modal-actions-row folder-picker-actions">
+            <button class="btn btn-outline" id="btnFolderPickerCancel">Cancel</button>
+            <button class="btn btn-primary" id="btnFolderPickerSelect">Select this folder</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Indeterminate loading overlay (probe / batch add) -->
     <div class="modal-backdrop hidden" id="loadingModal" aria-live="polite" aria-busy="true">
       <div class="modal-window loading-window">
@@ -1179,6 +1206,6 @@ Default: PSNR</span>
     </div>
   </div>
 
-  <script src="/static/app.js?v=pass39"></script>
+  <script src="/static/app.js?v=pass40"></script>
 </body>
 </html>

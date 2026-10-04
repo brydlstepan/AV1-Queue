@@ -285,10 +285,13 @@ class HDRDoviProcessor:
         file_path: Path,
         temp_dir: Path = None,
         probe: Optional[Dict[str, Any]] = None,
+        use_filename: bool = True,
     ) -> Dict[str, Any]:
         """
         Analyzes video stream for HDR10 / HDR10+ / Dolby Vision.
         Pass probe= to reuse an existing ffprobe JSON dict (avoids a second probe).
+        use_filename=False ignores filename tokens (DV, HDR10, …) — for checking
+        an encode, whose name is derived from the source's and proves nothing.
         """
         _ = temp_dir
         file_path = Path(file_path)
@@ -299,7 +302,7 @@ class HDRDoviProcessor:
                 video_stream = s
                 break
 
-        name = file_path.name
+        name = file_path.name if use_filename else ""
         fname_dovi = bool(_FILENAME_DOVI.search(name))
         fname_hdr10plus = bool(_FILENAME_HDR10PLUS.search(name))
         fname_hdr10 = bool(_FILENAME_HDR10.search(name)) and not fname_dovi and not fname_hdr10plus

@@ -733,7 +733,16 @@ class QueueManager:
         self.emit_event("queue_reordered", {"job_ids": [j["id"] for j in result]})
         return result
 
-    def start_queue(self, test_mode_config: Optional[Dict[str, Any]] = None):
+    def start_queue(self):
+        # A Stop only signals the worker; it may still be unwinding (killing
+        # processes, moving a watch-folder source). Starting over it would clear
+        # the cancel it is acting on and leave two worker loops running.
+        prev = self._worker_thread
+        if prev is not None and prev.is_alive() and prev is not threading.current_thread():
+            prev.join(timeout=5)
+            if prev.is_alive():
+                raise RuntimeError("The queue is still stopping — try Start again in a moment.")
+
         # Atomic check-and-set so concurrent Start cannot spawn two workers.
         with self._lock:
             if self.is_running:
@@ -761,10 +770,6 @@ class QueueManager:
         self.save_queue()
         for j in requeued:
             self.emit_event("job_update", j)
-
-        # Per-job Test Mode only — do not stamp the UI toggle onto every queued job here.
-        # (UI confirms before Start when Test Mode is on with multiple jobs; toggle syncs via apply-test-mode.)
-        _ = test_mode_config
 
         # Clear any leftover ffmpeg/SVT from a previous stop/crash
         self.pipeline.kill_all_processes()
@@ -901,6 +906,32 @@ class QueueManager:
         self.emit_event("history_updated", job)
         self.emit_event("job_removed", {"id": job_id})
 
+    @staticmethod
+    def _move_watch_source(job: Dict[str, Any], subdir: str) -> None:
+        """
+        Move a watch-folder job's source into <watch_dir>/<subdir>/ (failed/,
+        skipped/). The job is about to leave the queue for history, and a source
+        left in the watched folder would be re-queued by the next startup sweep.
+        Only touches sources still sitting directly in the watched folder.
+        """
+        watch_dir = (job.get("config") or {}).get("watch_source_dir")
+        if not watch_dir:
+            return
+        src = Path(job.get("input_path") or "")
+        try:
+            if not src.is_file() or src.parent.resolve() != Path(watch_dir).resolve():
+                return
+            dest_dir = Path(watch_dir) / subdir
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / src.name
+            if dest.exists():
+                dest = dest_dir / f"{src.stem}_{job['id'][:8]}{src.suffix}"
+            shutil.move(str(src), str(dest))
+            job["input_path"] = str(dest)
+            job.setdefault("logs", []).append(_stamp_log(f"Source moved to {dest}"))
+        except Exception as e:
+            job.setdefault("logs", []).append(_stamp_log(f"Could not move source to {subdir}/: {e}"))
+
     def _finalize_skipped(self, job, job_id, start_time, reason):
         """Record a skipped source in history without producing any output."""
         job["status"] = JobStatus.SKIPPED
@@ -916,6 +947,7 @@ class QueueManager:
             "reason": reason,
             "duration_seconds": job["elapsed_seconds"],
         }
+        self._move_watch_source(job, "skipped")
         self._archive_job_to_history(job, job_id)
         print(f"[queue] Job {job_id} skipped: {reason}")
 
@@ -956,6 +988,7 @@ class QueueManager:
             self.emit_event("job_update", job)
             print(f"[!] Job {job_id} cancelled: {error}")
             return
+        self._move_watch_source(job, "failed")
         self._archive_job_to_history(job, job_id)
         print(f"[!] Job {job_id} failed: {error}")
 
@@ -1093,7 +1126,11 @@ class QueueManager:
         self.emit_event("job_update", job)
 
         try:
-            out_info = self.pipeline.hdr_processor.analyze_hdr_and_dovi(partial, encode_temp_dir)
+            # Probe only: the partial's name comes from the source's (DV / HDR10
+            # tokens), which would make a lost-HDR output look HDR
+            out_info = self.pipeline.hdr_processor.analyze_hdr_and_dovi(
+                partial, encode_temp_dir, use_filename=False
+            )
         except Exception as e:
             out_info = None
             append_log(f"Output HDR check skipped: {e}", update_stage=False)
@@ -1543,7 +1580,11 @@ class QueueManager:
             # manually-added job never has this set, even if its source happens to
             # sit inside the watched folder.
             watch_source_dir = cfg.get("watch_source_dir")
-            if watch_source_dir:
+            if watch_source_dir and cfg.get("test_mode"):
+                # A test segment says nothing about the full encode — the source
+                # stays in the watch folder (still dedup'd while it's queued).
+                append_log("Test Mode — source left in the watch folder", update_stage=False)
+            elif watch_source_dir:
                 try:
                     verify_probe = self.pipeline.probe_media(final_out)
                     verify_ok = bool(verify_probe.get("video")) and verify_probe.get("duration", 0) > 0

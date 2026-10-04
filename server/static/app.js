@@ -3031,13 +3031,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // No Test Mode prompt: pipeline / Test Mode settings live on the server and
       // every job re-reads them as it starts, so queued jobs can't disagree with them.
       const body = { action };
-      await fetch("/api/queue/action", {
+      await fetchJson("/api/queue/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
     } catch (e) {
       console.error(e);
+      await customAlert(e.message || String(e));
     }
   }
 
@@ -3276,6 +3277,78 @@ document.addEventListener("DOMContentLoaded", () => {
       console.error(e);
     }
     }
+
+  // --- Folder picker (watch-folder settings) ---
+  // Same server-side browsing as Add Files, folders only: the paths belong to
+  // the machine running the server, not the browser.
+  const folderPickerModal = document.getElementById("folderPickerModal");
+  const folderPickerList = document.getElementById("folderPickerList");
+  const folderPickerPath = document.getElementById("folderPickerPath");
+  let folderPickerCurrent = null;   // null = drives list (nothing selectable)
+  let folderPickerParent = null;
+  let folderPickerResolve = null;
+
+  async function loadFolderPicker(path) {
+    try {
+      const data = await fetchJson(`/api/browse?dirs_only=true&path=${encodeURIComponent(path || "drives")}`);
+      const atDrives = !data.parent_path && data.current_path === "This PC";
+      folderPickerCurrent = atDrives ? null : data.current_path;
+      folderPickerParent = data.parent_path || null;
+      folderPickerPath.textContent = data.current_path;
+      document.getElementById("btnFolderPickerSelect").disabled = !folderPickerCurrent;
+      document.getElementById("btnFolderPickerUp").disabled = atDrives;
+      const items = data.items || [];
+      folderPickerList.innerHTML = items.length
+        ? items.map(item => `
+          <div class="b-item" data-path="${escapeHtml(item.path)}">
+            <span>📁</span>
+            <span>${escapeHtml(item.name)}</span>
+          </div>`).join("")
+        : `<div class="b-item" aria-disabled="true"><span>${escapeHtml(data.error || "No subfolders")}</span></div>`;
+      folderPickerList.querySelectorAll(".b-item[data-path]").forEach(el => {
+        el.addEventListener("click", () => loadFolderPicker(el.getAttribute("data-path")));
+      });
+    } catch (e) {
+      console.error(e);
+      folderPickerList.innerHTML = `<div class="b-item" aria-disabled="true"><span>${escapeHtml(e.message || String(e))}</span></div>`;
+    }
+  }
+
+  /** Resolves to the chosen folder path, or null if cancelled. */
+  function pickFolder(startPath, title) {
+    if (folderPickerResolve) folderPickerResolve(null);
+    document.getElementById("folderPickerTitle").textContent = title || "Select Folder";
+    folderPickerModal.classList.remove("hidden");
+    loadFolderPicker(startPath || localStorage.getItem(LAST_BROWSE_PATH_KEY) || "drives");
+    return new Promise(resolve => { folderPickerResolve = resolve; });
+  }
+
+  function closeFolderPicker(result) {
+    folderPickerModal.classList.add("hidden");
+    const resolve = folderPickerResolve;
+    folderPickerResolve = null;
+    if (resolve) resolve(result);
+  }
+
+  document.getElementById("btnFolderPickerUp").addEventListener("click", () => loadFolderPicker(folderPickerParent || "drives"));
+  document.getElementById("btnFolderPickerSelect").addEventListener("click", () => {
+    if (folderPickerCurrent) closeFolderPicker(folderPickerCurrent);
+  });
+  document.getElementById("btnFolderPickerCancel").addEventListener("click", () => closeFolderPicker(null));
+  document.getElementById("btnFolderPickerClose").addEventListener("click", () => closeFolderPicker(null));
+
+  document.querySelectorAll(".btn-browse-folder").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const input = document.getElementById(btn.getAttribute("data-target"));
+      if (!input) return;
+      const picked = await pickFolder(input.value.trim(), btn.getAttribute("data-title"));
+      if (picked) {
+        input.value = picked;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+  });
 
   // Mirrors core/pipeline.py select_and_prioritize_audio's ordering: preferred
   // languages first (in priority order), everything else after, in original order.

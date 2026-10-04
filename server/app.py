@@ -197,7 +197,7 @@ class BatchAddRequest(BaseModel):
 class ActionRequest(BaseModel):
     action: str  # start, pause, resume, stop
     job_id: Optional[str] = None
-    # Optional Test Mode fields sent with "start" (and apply-test-mode)
+    # Test Mode fields for apply-test-mode
     test_mode: Optional[bool] = None
     trim_start: Optional[str] = None
     trim_end: Optional[str] = None
@@ -538,13 +538,11 @@ async def requeue_job(req: ActionRequest):
 async def queue_action(req: ActionRequest):
     act = req.action.lower()
     if act == "start":
-        tm = None
-        if req.test_mode is not None:
-            tm = {"test_mode": bool(req.test_mode)}
-            if tm["test_mode"]:
-                tm["trim_start"] = req.trim_start or "01:01:10"
-                tm["trim_end"] = req.trim_end or "01:01:30"
-        queue_mgr.start_queue(test_mode_config=tm)
+        # Off the event loop: start may wait a few seconds for a stopping worker
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, queue_mgr.start_queue)
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
     elif act == "pause":
         queue_mgr.pause_queue()
     elif act == "resume":
@@ -706,8 +704,8 @@ def get_available_drives():
 
 
 @app.get("/api/browse")
-async def browse_directory(path: Optional[str] = None):
-    """File/Directory navigation helper with drive selection."""
+async def browse_directory(path: Optional[str] = None, dirs_only: bool = False):
+    """File/Directory navigation helper with drive selection (dirs_only: folder picker)."""
     if not path or path == "" or path == "drives":
         drives = get_available_drives()
         return {
@@ -728,7 +726,7 @@ async def browse_directory(path: Optional[str] = None):
         for entry in target.iterdir():
             try:
                 is_dir = entry.is_dir()
-                is_video = entry.suffix.lower() in [".mkv", ".mp4", ".mov", ".avi", ".webm", ".ts", ".m2ts"]
+                is_video = not dirs_only and entry.suffix.lower() in [".mkv", ".mp4", ".mov", ".avi", ".webm", ".ts", ".m2ts"]
                 if is_dir or is_video:
                     items.append({
                         "name": entry.name,

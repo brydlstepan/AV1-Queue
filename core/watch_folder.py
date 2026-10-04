@@ -15,11 +15,15 @@ add; the manual add/browse/drag-drop path itself is unchanged.
 The finished AV1 output is written to <watch_dir>/encoded/ (never back into the
 watched folder itself, or the watcher would re-detect its own output as a new
 source and re-encode it forever). Once that output is verified,
-QueueManager._run_job moves the original source into <watch_dir>/encoded_sources/.
+QueueManager._execute_single_job moves the original source into
+<watch_dir>/encoded_sources/; a source whose job fails goes to failed/, one
+skipped by the Dolby Vision policy to skipped/ (so the startup sweep doesn't
+re-queue it). Test Mode encodes leave the source where it is.
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import threading
@@ -79,13 +83,18 @@ class _StableFileWaiter:
     copy is not. Poll size until unchanged across consecutive checks before
     treating the file as finished."""
 
-    def __init__(self, poll_seconds: float = 1.0, stable_checks: int = 3):
+    # Log once when a file has been unopenable this long, so a file that can
+    # never be opened exclusively (permissions, a stuck writer) isn't silent.
+    STUCK_LOG_SECONDS = 120.0
+
+    def __init__(self, poll_seconds: float = 1.0, stable_checks: int = 3, log=print):
         self.poll_seconds = poll_seconds
         self.stable_checks = stable_checks
+        self.log = log
 
     @staticmethod
-    def _writer_holds_handle(path: Path) -> bool:
-        """True while any other process still has the file open.
+    def _exclusive_open_error(path: Path) -> int:
+        """0 if the file can be opened exclusively right now, else the Win32 error.
 
         Size alone is not enough: a copy that stalls for a couple of seconds
         (SMB reconnect, AV scan, slow source disk) looks identical to a finished
@@ -93,62 +102,88 @@ class _StableFileWaiter:
 
         Python's own open() requests a sharing mode that succeeds even while a
         copy is in progress, so it cannot answer this. CreateFileW with
-        dwShareMode=0 asks for exclusive access and fails with a sharing
-        violation exactly while someone else holds a handle. Non-Windows falls
-        back to the size check alone.
+        dwShareMode=0 asks for exclusive access and fails (sharing violation)
+        exactly while someone else holds a handle. Any failure counts as "not
+        ready" — guessing "free" on an unexpected error would let a file still
+        being written slip through. Non-Windows falls back to the size check alone.
         """
         if os.name != "nt":
-            return False
+            return 0
         try:
-            import ctypes
-            from ctypes import wintypes
-
-            GENERIC_READ = 0x80000000
-            OPEN_EXISTING = 3
-            INVALID_HANDLE = ctypes.c_void_p(-1).value
-            ERROR_SHARING_VIOLATION = 32
-            ERROR_LOCK_VIOLATION = 33
-
-            CreateFileW = ctypes.windll.kernel32.CreateFileW
-            CreateFileW.restype = wintypes.HANDLE
-            handle = CreateFileW(
+            kernel32 = _kernel32()
+            handle = kernel32.CreateFileW(
                 str(path),
-                GENERIC_READ,
-                0,  # dwShareMode = 0 -> exclusive
+                0x80000000,  # GENERIC_READ
+                0,           # dwShareMode = 0 -> exclusive
                 None,
-                OPEN_EXISTING,
+                3,           # OPEN_EXISTING
                 0,
                 None,
             )
-            if handle == INVALID_HANDLE or handle is None:
-                # windll.kernel32 isn't created with use_last_error=True, so read
-                # the error via the Win32 GetLastError directly.
-                return ctypes.windll.kernel32.GetLastError() in (
-                    ERROR_SHARING_VIOLATION,
-                    ERROR_LOCK_VIOLATION,
-                )
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return False
+            if handle is None or handle == _INVALID_HANDLE:
+                # use_last_error=True: ctypes saved the code right after the call
+                return ctypes.get_last_error() or -1
+            kernel32.CloseHandle(handle)
+            return 0
         except Exception:
-            return False
+            return -1
 
     def wait_until_stable(self, path: Path, cancel_event: threading.Event) -> bool:
         last_size = -1
         stable_count = 0
+        blocked_since: Optional[float] = None
+        logged_stuck = False
         while not cancel_event.is_set():
             try:
                 size = path.stat().st_size
             except OSError:
                 return False
-            if size == last_size and not self._writer_holds_handle(path):
+            open_err = self._exclusive_open_error(path) if size == last_size else 0
+            if size == last_size and not open_err:
+                blocked_since = None
                 stable_count += 1
                 if stable_count >= self.stable_checks:
                     return True
             else:
                 stable_count = 0
                 last_size = size
+                if open_err:
+                    blocked_since = blocked_since or time.monotonic()
+                    if not logged_stuck and time.monotonic() - blocked_since >= self.STUCK_LOG_SECONDS:
+                        logged_stuck = True
+                        self.log(
+                            f"[watch] Still waiting for {path.name}: size unchanged but the "
+                            f"file can't be opened exclusively (Windows error {open_err}) — "
+                            "another program may still be writing it"
+                        )
+                else:
+                    blocked_since = None  # size still changing: being written, not stuck
             time.sleep(self.poll_seconds)
         return False
+
+
+_INVALID_HANDLE = ctypes.c_void_p(-1).value
+_kernel32_dll = None
+
+
+def _kernel32():
+    """kernel32 loaded with use_last_error=True, so ctypes.get_last_error() is
+    the code from our own call — not one clobbered by ctypes / the interpreter
+    in between (which the global windll.kernel32 + GetLastError() can't promise)."""
+    global _kernel32_dll
+    if _kernel32_dll is None:
+        from ctypes import wintypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        k.CreateFileW.restype = wintypes.HANDLE
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.CloseHandle.restype = wintypes.BOOL
+        _kernel32_dll = k
+    return _kernel32_dll
 
 
 class WatchFolderService:
@@ -204,6 +239,13 @@ class WatchFolderService:
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             return
         key = str(path.resolve())
+        # Sources the queue moved into encoded_sources/ / failed/ / skipped/ can
+        # surface as move events — only files directly in the folder count
+        try:
+            if Path(key).parent != self.watch_dir.resolve():
+                return
+        except OSError:
+            return
         with self._pending_lock:
             if key in self._pending:
                 return
@@ -213,7 +255,7 @@ class WatchFolderService:
 
     def _process(self, path: Path) -> None:
         try:
-            waiter = _StableFileWaiter()
+            waiter = _StableFileWaiter(log=self.log)
             if not waiter.wait_until_stable(path, self._cancel_event):
                 return
             if not path.is_file():
