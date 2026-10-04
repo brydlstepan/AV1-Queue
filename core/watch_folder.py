@@ -29,7 +29,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -40,29 +40,35 @@ ENCODED_DIRNAME = "encoded"
 _PRESET_TAG_RE = re.compile(r"preset-([a-z0-9_-]+)", re.IGNORECASE)
 
 
-def resolve_preset(filename: str, presets: List[Dict[str, Any]], default_preset_id: str) -> Optional[Dict[str, Any]]:
+def resolve_preset(
+    filename: str, presets: List[Dict[str, Any]], default_preset_id: str
+) -> Tuple[Optional[Dict[str, Any]], str]:
     """Match "preset-<id>" in the filename against presets by id (case-insensitive),
     falling back to default_preset_id, then to no preset at all (add_job's own
-    built-in defaults apply)."""
+    built-in defaults apply). Returns (preset, how): how is "tag", "default"
+    or "none" — logged on the job."""
     by_id = {str(p.get("id", "")).lower(): p for p in presets}
 
     m = _PRESET_TAG_RE.search(Path(filename).stem)
     if m:
         match = by_id.get(m.group(1).lower())
         if match:
-            return match
+            return match, "tag"
 
     if default_preset_id:
-        return by_id.get(str(default_preset_id).lower())
+        match = by_id.get(str(default_preset_id).lower())
+        if match:
+            return match, "default"
 
-    return None
+    return None, "none"
 
 
-def build_config(preset: Optional[Dict[str, Any]], watch_dir: Path) -> Dict[str, Any]:
+def build_config(preset: Optional[Dict[str, Any]], watch_dir: Path, preset_via: str = "none") -> Dict[str, Any]:
     """Config overlay for a watch-folder job — only preset-derived fields plus the
-    watch_source_dir marker; everything else falls back to add_job's own defaults."""
+    watch_source_dir marker (and how the preset was chosen, for the job log);
+    everything else falls back to add_job's own defaults."""
     p = preset or {}
-    config: Dict[str, Any] = {"watch_source_dir": str(watch_dir)}
+    config: Dict[str, Any] = {"watch_source_dir": str(watch_dir), "watch_preset_via": preset_via}
     if preset:
         config["preset_id"] = p.get("id")
         config["preset_name"] = p.get("name")
@@ -271,8 +277,8 @@ class WatchFolderService:
                 return
 
             presets = self.load_presets_fn()
-            preset = resolve_preset(path.name, presets, self.default_preset_id)
-            config = build_config(preset, self.watch_dir)
+            preset, preset_via = resolve_preset(path.name, presets, self.default_preset_id)
+            config = build_config(preset, self.watch_dir, preset_via)
 
             # The output must never land back inside the watched folder itself —
             # otherwise the watcher immediately re-detects its own output as a new

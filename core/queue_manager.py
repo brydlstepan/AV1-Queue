@@ -21,6 +21,7 @@ from core.handbrake_encode import (
     hb_audio_track_numbers,
     parse_applied_crop,
     split_removed_svt_params,
+    summarize_handbrake_log,
 )
 from core.hdr_dovi import svt_chroma_position
 from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format, target_height_for
@@ -160,6 +161,90 @@ def _resolved_str(path: Optional[str]) -> str:
         return str(path)
 
 
+def _fmt_duration(seconds: Any) -> str:
+    """'2h 35m 46s' / '1m 18s' / '9s' / '0.4s' for job-log lines."""
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return "?"
+    if s < 10:
+        return f"{s:.1f}s"
+    total = int(round(s))
+    h, rem = divmod(total, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {sec:02d}s"
+    if m:
+        return f"{m}m {sec:02d}s"
+    return f"{sec}s"
+
+
+def _fmt_bytes(n: Any) -> str:
+    """Binary units, labelled like Windows Explorer (GB = GiB)."""
+    try:
+        v = float(n)
+    except (TypeError, ValueError):
+        return "?"
+    for unit in ("B", "KB", "MB", "GB"):
+        if v < 1024 or unit == "GB":
+            return f"{v:.0f} {unit}" if unit == "B" else f"{v:.1f} {unit}"
+        v /= 1024
+    return f"{v:.1f} TB"
+
+
+_LAYOUT_BY_CHANNELS = {6: "5.1", 2: "stereo", 1: "mono"}
+
+
+def _audio_track_line(t: Dict[str, Any], fmt_label: str) -> str:
+    """'ENG TrueHD 7.1 (#2) → Opus 5.1 @ 320k' — source track and its encode target."""
+    codec = str(t.get("codec") or "?")
+    codec = {"truehd": "TrueHD", "eac3": "E-AC-3", "ac3": "AC-3", "dts": "DTS",
+             "aac": "AAC", "flac": "FLAC", "opus": "Opus", "pcm_s24le": "PCM",
+             "pcm_s16le": "PCM"}.get(codec, codec.upper())
+    src_layout = str(t.get("channel_layout") or "").split("(")[0] or f"{t.get('channels', '?')}ch"
+    title = str(t.get("title") or "").strip()
+    target = _LAYOUT_BY_CHANNELS.get(int(t.get("target_channels") or 0), "?")
+    return (
+        f"{str(t.get('language') or 'und').upper()} {codec} {src_layout} (#{t.get('stream_index')})"
+        + (f" \"{title}\"" if title else "")
+        + f" → {fmt_label} {target} @ {t.get('target_bitrate') or '?'}"
+    )
+
+
+_TAG_SOURCE_LABELS = {
+    "filename": "from the filename",
+    "nfo": "from an .nfo next to the source",
+    "tmdb": "via TMDB",
+    "manual": "edited manually",
+    "partial": "no IMDb id",
+    "guess": "guessed from the filename",
+}
+
+
+def _naming_line(tag: Dict[str, Any]) -> str:
+    """How the output name's title / IMDb id were resolved at add time."""
+    if not tag:
+        return "Naming: no media tag (custom output path)"
+    if tag.get("media_kind") == "episode":
+        se = ""
+        if tag.get("season") is not None and tag.get("episode") is not None:
+            se = f" S{int(tag['season']):02d}E{int(tag['episode']):02d}"
+        ep = f" \"{tag['epname']}\"" if tag.get("epname") else ""
+        head = f"Naming: episode \"{tag.get('show') or tag.get('title') or '?'}\"{se}{ep}"
+    else:
+        year = f" ({tag['year']})" if tag.get("year") else ""
+        head = f"Naming: \"{tag.get('title') or '?'}\"{year}"
+    bits = [head]
+    if tag.get("imdb_id"):
+        bits.append(str(tag["imdb_id"]))
+    src = "manual" if tag.get("verified") and tag.get("source") == "manual" else tag.get("source")
+    if src in _TAG_SOURCE_LABELS:
+        bits.append(_TAG_SOURCE_LABELS[src])
+    if tag.get("lookup_note"):
+        bits.append(str(tag["lookup_note"]))
+    return " · ".join(bits)
+
+
 def _container_title(fmt: Optional[Dict[str, Any]]) -> str:
     """The source container's title tag (ffprobe format tags; MKV may say TITLE)."""
     tags = (fmt or {}).get("tags") or {}
@@ -201,6 +286,13 @@ class QueueManager:
         self._cancel_event = threading.Event()
         self._listeners = []
         self._lock = threading.Lock()
+        self._history_lock = threading.Lock()
+        # The running job's append_log (pause / resume write to it); None between jobs
+        self._job_log = None
+        # Pause bookkeeping for the active clock (stage timings exclude pauses)
+        self._pause_clock_lock = threading.Lock()
+        self._paused_total = 0.0
+        self._paused_since: Optional[float] = None
         self.load_queue()
         self._recover_interrupted_jobs()
 
@@ -761,6 +853,7 @@ class QueueManager:
                 return
             self.is_running = True
             self.is_paused = False
+            self._end_pause_clock()
             self._cancel_event.clear()
 
         # Retry failed jobs on Start; cancelled stay cancelled until Reset
@@ -789,17 +882,57 @@ class QueueManager:
         self._worker_thread.start()
         self.emit_event("queue_started", {})
 
+    def _paused_seconds(self) -> float:
+        """Total time spent paused so far (including a pause in progress)."""
+        with self._pause_clock_lock:
+            total = self._paused_total
+            if self._paused_since is not None:
+                total += time.monotonic() - self._paused_since
+            return total
+
+    def _active_clock(self) -> float:
+        """A monotonic clock that stands still while the queue is paused — stage
+        timings ("encode took …", fps) count only time spent working."""
+        return time.monotonic() - self._paused_seconds()
+
+    def _end_pause_clock(self) -> float:
+        """Close an open pause (resume / stop / start). Returns its length."""
+        with self._pause_clock_lock:
+            if self._paused_since is None:
+                return 0.0
+            paused_for = time.monotonic() - self._paused_since
+            self._paused_total += paused_for
+            self._paused_since = None
+            return paused_for
+
+    def _log_to_current_job(self, msg: str) -> None:
+        log = self._job_log
+        if log is not None:
+            try:
+                log(msg, update_stage=False)
+            except Exception:
+                pass
+
     def pause_queue(self):
+        if not self.is_paused:
+            self._log_to_current_job("Paused")
+            with self._pause_clock_lock:
+                if self._paused_since is None:
+                    self._paused_since = time.monotonic()
         self.is_paused = True
         self.pipeline.suspend_current_process()
         self.emit_event("queue_paused", {})
 
     def resume_queue(self):
+        if self.is_paused:
+            paused_for = self._end_pause_clock()
+            self._log_to_current_job(f"Resumed (paused {_fmt_duration(paused_for)})")
         self.is_paused = False
         self.pipeline.resume_current_process()
         self.emit_event("queue_resumed", {})
 
     def stop_queue(self):
+        self._end_pause_clock()  # Stop while paused must not leave the clock frozen
         self.is_running = False
         self.current_job_id = None
         self._cancel_event.set()
@@ -943,6 +1076,29 @@ class QueueManager:
             job.setdefault("logs", []).append(_stamp_log(f"Source moved to {dest}"))
         except Exception as e:
             job.setdefault("logs", []).append(_stamp_log(f"Could not move source to {subdir}/: {e}"))
+
+    def _append_history_logs(self, job_id: str, lines: List[str]) -> None:
+        """Add log lines to a job already archived in history/ (background
+        subtitle step) and tell the UI to refresh Finished."""
+        if not lines:
+            return
+        path = HISTORY_DIR / f"{job_id}.json"
+        with self._history_lock:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    record = json.load(f)
+            except (OSError, ValueError):
+                return  # deleted from Finished meanwhile
+            record.setdefault("logs", []).extend(lines)
+            tmp = path.with_suffix(".json.tmp")
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(record, f, indent=2)
+                os.replace(str(tmp), str(path))
+            except OSError as e:
+                print(f"[!] Could not add subtitle log to history: {e}")
+                return
+        self.emit_event("history_updated", record)
 
     def _finalize_skipped(self, job, job_id, start_time, reason):
         """Record a skipped source in history without producing any output."""
@@ -1097,6 +1253,7 @@ class QueueManager:
         )
         append_log("HandBrakeCLI " + subprocess.list2cmdline(cmd[1:]), update_stage=False)
 
+        t_enc = self._active_clock()
         try:
             self.pipeline.run_handbrake_encode(
                 cmd,
@@ -1115,12 +1272,24 @@ class QueueManager:
             partial.unlink(missing_ok=True)
             raise RuntimeError("Job cancelled.")
 
+        enc_seconds = self._active_clock() - t_enc
+        try:
+            hb_log = (encode_temp_dir / "handbrake.log").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            hb_log = ""
+        hb_summary = summarize_handbrake_log(hb_log)
+        enc_bits = [f"HandBrake encode took {_fmt_duration(enc_seconds)}"]
+        if hb_summary["frames"]:
+            enc_bits.append(f"{hb_summary['frames']} frames")
+            if enc_seconds > 0:
+                enc_bits.append(f"{hb_summary['frames'] / enc_seconds:.2f} fps avg")
+            enc_bits.append(f"{hb_summary['dropped'] or 0} dropped")
+        append_log(" · ".join(enc_bits), update_stage=False)
+        for note in hb_summary["notes"]:
+            append_log(f"HandBrake: {note}", update_stage=False)
+
         applied_crop: Optional[Dict[str, int]] = {"left": 0, "top": 0, "right": 0, "bottom": 0}
         if autocrop:
-            try:
-                hb_log = (encode_temp_dir / "handbrake.log").read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                hb_log = ""
             applied_crop = parse_applied_crop(hb_log)
             if applied_crop is None:
                 append_log("Autocrop: couldn't read the crop HandBrake applied from its log", update_stage=False)
@@ -1134,6 +1303,7 @@ class QueueManager:
             else:
                 append_log("Autocrop (HandBrake): no black bars found", update_stage=False)
 
+        t_verify = self._active_clock()
         job["status"] = JobStatus.REMUXING
         job["stage"] = "Verifying HandBrake output"
         job["stage_num"] = 3
@@ -1185,7 +1355,10 @@ class QueueManager:
         except Exception as e:
             partial.unlink(missing_ok=True)
             raise RuntimeError(f"Could not publish HandBrake output to {out_path}: {e}") from e
-        append_log(f"Published final: {out_path.name}", update_stage=False)
+        append_log(
+            f"Published final: {out_path.name} (verify + publish {_fmt_duration(self._active_clock() - t_verify)})",
+            update_stage=False,
+        )
         return out_path, applied_crop
 
     def _rename_for_output_hdr(
@@ -1262,6 +1435,7 @@ class QueueManager:
         encode_temp_dir.mkdir(parents=True, exist_ok=True)
 
         start_time = time.time()
+        job_paused_at_start = self._paused_seconds()  # pauses before this job don't count
         job["status"] = JobStatus.EXTRACTING
         job["stage"] = "Probing Audio & HDR/DoVi Metadata"
         job["stage_num"] = 1
@@ -1374,12 +1548,72 @@ class QueueManager:
                     last_progress_emit[0] = time.monotonic()
                     self.emit_event("job_progress", self._progress_payload(job, log=line))
 
+            self._job_log = append_log  # pause / resume land in this job's log
+
             if pipeline_changes:
                 append_log(
                     "Pipeline settings applied at start: "
                     + ", ".join(f"{k} {old} → {new}" for k, (old, new) in pipeline_changes.items()),
                     update_stage=False,
                 )
+
+            # Source summary
+            mi = job.get("media_info") or {}
+            v = mi.get("video") or {}
+            src_bits = [f"{str(v.get('codec') or '?').upper()} {v.get('width', '?')}×{v.get('height', '?')}"]
+            if "10" in str(v.get("pix_fmt") or ""):
+                src_bits.append("10-bit")
+            src_fps = frame_rate_to_float(v.get("r_frame_rate"))
+            if src_fps:
+                src_bits.append(f"{src_fps:.3f} fps")
+            if mi.get("duration"):
+                src_bits.append(_fmt_duration(mi["duration"]))
+            try:
+                src_bits.append(_fmt_bytes(inp_path.stat().st_size))
+            except OSError:
+                pass
+            append_log(f"Source: {inp_path.name} · " + " · ".join(src_bits), update_stage=False)
+            if mi.get("source_title"):
+                append_log(f"Source title (release name): {mi['source_title']}", update_stage=False)
+
+            append_log(_naming_line(job.get("media_tag") or {}), update_stage=False)
+
+            if cfg.get("watch_source_dir"):
+                via = {"tag": "from the filename's preset- tag", "default": "the watch-folder default"}.get(
+                    cfg.get("watch_preset_via"), "none matched — built-in defaults"
+                )
+                append_log(
+                    f"Watch folder: queued from {cfg['watch_source_dir']} · preset "
+                    + (f"\"{cfg['preset_name']}\" " if cfg.get("preset_name") else "")
+                    + f"({via})",
+                    update_stage=False,
+                )
+
+            # Encode settings in plain words (the HandBrake command has the rest)
+            preset_label = f"\"{cfg['preset_name']}\"" if cfg.get("preset_name") else "none (built-in defaults)"
+            if cfg.get("preset_stale"):
+                preset_label += " (outdated — the saved preset changed since this job was queued)"
+            res_target = str(cfg.get("resolution_target") or "source")
+            set_bits = [
+                f"Settings: preset {preset_label}",
+                f"CRF {float(cfg.get('crf', JOB_CONFIG_DEFAULTS['crf'])):g}",
+                f"SVT preset {cfg.get('preset', JOB_CONFIG_DEFAULTS['preset'])}",
+                "source resolution" if res_target == "source" else f"max {res_target}",
+                container_early.upper(),
+                f"audio {audio_label}",
+                "autocrop on" if cfg.get("autocrop", True) else "autocrop off",
+            ]
+            if hdr_analysis.get("is_dovi"):
+                set_bits.append("DoVi RPU kept" if settings_live.get("preserve_dovi_rpu") else "DoVi RPU discarded")
+            if lp_n > 0:
+                set_bits.append(f"lp {lp_n}")
+            if settings_live.get("svt_low_memory"):
+                set_bits.append("low-memory")
+            n_svt = len([k for k in (cfg.get("svt_params") or {}) if k not in ("lp", "low-memory")])
+            if n_svt:
+                set_bits.append(f"{n_svt} SVT override(s)")
+            set_bits.append("SSIMU2 on" if cfg.get("ssimu2_post") else "SSIMU2 off")
+            append_log(" · ".join(set_bits), update_stage=False)
 
             if (hdr_analysis.get("is_dovi") or hdr_analysis.get("is_hdr")
                     or hdr_analysis.get("is_hdr10plus")
@@ -1419,16 +1653,10 @@ class QueueManager:
             # Preserve inspector / default selection order
             selected_indices = [t["stream_index"] for t in ordered_audio]
             if ordered_audio:
-                append_log(
-                    "Audio selection: "
-                    + ", ".join(
-                        f"{t.get('language','und').upper()}#{t['stream_index']}"
-                        for t in ordered_audio
-                    ),
-                    update_stage=False
-                )
+                for t in ordered_audio:
+                    append_log("Audio: " + _audio_track_line(t, audio_label), update_stage=False)
             else:
-                append_log("Audio selection: none (video-only)", update_stage=False)
+                append_log("Audio: none (video-only)", update_stage=False)
 
             if cfg.get("test_mode"):
                 trim_start = cfg.get("trim_start", JOB_CONFIG_DEFAULTS["trim_start"])
@@ -1443,6 +1671,7 @@ class QueueManager:
                     update_stage=False
                 )
                 segment_path = job_temp_dir / f"test_segment{inp_path.suffix}"
+                t_seg = self._active_clock()
                 encode_input = self.pipeline.extract_test_segment(
                     inp_path,
                     trim_start,
@@ -1458,6 +1687,14 @@ class QueueManager:
                 if self._cancel_event.is_set():
                     self.pipeline.kill_all_processes()
                     raise RuntimeError("Job cancelled.")
+                try:
+                    seg_size = _fmt_bytes(Path(encode_input).stat().st_size)
+                except OSError:
+                    seg_size = "?"
+                append_log(
+                    f"Test segment cut in {_fmt_duration(self._active_clock() - t_seg)} ({seg_size})",
+                    update_stage=False,
+                )
 
                 # Segment only contains the mapped audio tracks — rebind stream indexes in order
                 seg_media = self.pipeline.probe_media(encode_input)
@@ -1481,11 +1718,6 @@ class QueueManager:
                     update_stage=False
                 )
 
-            if ordered_audio:
-                append_log(
-                    f"Audio: {len(ordered_audio)} track(s) to {audio_label}, encoded by HandBrake",
-                    update_stage=False,
-                )
 
             def encode_cb(data):
                 if self._cancel_event.is_set():
@@ -1543,6 +1775,7 @@ class QueueManager:
                 job["stage_num"] = 3
                 self.save_queue()
                 self.emit_event("job_update", job)
+                t_ssim = self._active_clock()
                 try:
                     # Full encodes: sample every 3rd frame; short test clips: every frame
                     metric_skip = 1 if cfg.get("test_mode") else 3
@@ -1559,6 +1792,7 @@ class QueueManager:
                 except Exception as metric_err:
                     append_log(f"SSIMU2 measurement skipped: {metric_err}", update_stage=False)
                     ssimu2_stats = {}
+                append_log(f"SSIMU2 step took {_fmt_duration(self._active_clock() - t_ssim)}", update_stage=False)
             elif self._cancel_event.is_set():
                 append_log(
                     "Cancelled after publish — keeping the output (skipping SSIMU2)",
@@ -1655,6 +1889,34 @@ class QueueManager:
             if crop and any(crop.values()):
                 job["stats"]["crop"] = crop
 
+            # Result summary
+            out_duration = float(
+                ((seg_media or {}).get("duration") if cfg.get("test_mode") else (job.get("media_info") or {}).get("duration"))
+                or 0
+            )
+            res_bits = [f"Result: {_fmt_bytes(final_size)}"]
+            if orig_size > 0:
+                # ratio is the reduction: positive = smaller than the source
+                res_bits.append(
+                    f"{'−' if ratio >= 0 else '+'}{abs(ratio):.1f}% vs {_fmt_bytes(orig_size)} "
+                    + ("test segment" if cfg.get("test_mode") else "source")
+                )
+            if out_duration > 0 and final_size > 0:
+                res_bits.append(f"{final_size * 8 / out_duration / 1e6:.2f} Mb/s overall")
+            paused_s = self._paused_seconds() - job_paused_at_start
+            res_bits.append(
+                f"total {_fmt_duration(max(0.0, time.time() - start_time - paused_s))}"
+                + (f" (+{_fmt_duration(paused_s)} paused)" if paused_s >= 1 else "")
+            )
+            append_log(" · ".join(res_bits), update_stage=False)
+            if estimated_full_bytes:
+                full_dur = (job.get("media_info") or {}).get("duration")
+                append_log(
+                    f"Estimated full-length size ≈ {_fmt_bytes(estimated_full_bytes)} for {_fmt_duration(full_dur)}"
+                    " (assumes the test range is representative)",
+                    update_stage=False,
+                )
+
             # Save to separate history file
             self._archive_job_to_history(job, job_id)
 
@@ -1680,9 +1942,13 @@ class QueueManager:
                 if do_extract or do_search:
                     def _subtitle_worker():
                         logs: List[str] = []
+                        # Same lines, stamped, for the job's log in Finished — the
+                        # job was archived before this thread started
+                        job_lines: List[str] = []
 
                         def _cb(msg: str):
                             logs.append(msg)
+                            job_lines.append(_stamp_log(f"Subtitles: {msg}"))
                             print(f"[subs {fname}] {msg}")
 
                         try:
@@ -1761,6 +2027,7 @@ class QueueManager:
                                 })
                         except Exception as sub_err:
                             print(f"[!] Subtitle extract/search failed for {fname}: {sub_err}")
+                            job_lines.append(_stamp_log(f"Subtitles: FAILED — {sub_err}"))
                             self.emit_event("subtitle_extract", {
                                 "id": jid,
                                 "filename": fname,
@@ -1770,7 +2037,14 @@ class QueueManager:
                                 "message": str(sub_err),
                                 "logs": logs,
                             })
+                        self._append_history_logs(jid, job_lines)
 
+                    job_lines_note = (
+                        "Subtitles: running in the background "
+                        + ("(extract" + (" + online search" if do_search else "") + ")" if do_extract else "(online search)")
+                        + " — results are added below when done"
+                    )
+                    self._append_history_logs(jid, [_stamp_log(job_lines_note)])
                     threading.Thread(
                         target=_subtitle_worker,
                         name=f"subs-{job_id[:8]}",
@@ -1787,6 +2061,7 @@ class QueueManager:
             )
 
         finally:
+            self._job_log = None
             stop_elapsed.set()
             job["elapsed_seconds"] = int(time.time() - start_time)
             self.current_job_id = None
