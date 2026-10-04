@@ -17,6 +17,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const TEST_MODE_SUBS_KEY = "av1queue_test_mode_subtitles";
   const CONTAINER_KEY = "av1queue_container";
   const LAST_BROWSE_PATH_KEY = "av1queue_last_browse_path";
+  const BROWSE_FAVORITES_KEY = "av1queue_browse_favorites";
   const SVT_LP_KEY = "av1queue_svt_lp";
   const SVT_LOW_MEMORY_KEY = "av1queue_svt_low_memory";
   const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]";
@@ -465,6 +466,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnClearBrowserSelection = document.getElementById("btnClearBrowserSelection");
   const inspectorPanel = document.getElementById("inspectorPanel");
   const browserChrome = document.getElementById("browserChrome");
+  const browserShell = document.getElementById("browserShell");
+  const browserFavoritesList = document.getElementById("browserFavoritesList");
   const inspFileName = document.getElementById("inspFileName");
   const inspVideoMeta = document.getElementById("inspVideoMeta");
   const inspAudioTracks = document.getElementById("inspAudioTracks");
@@ -996,6 +999,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Secret values never reach the browser; only whether each one is saved
     secrets_set: { tmdb_api_key: false, opensubtitles_api_key: false, opensubtitles_password: false },
     watch_folder_enabled: false,
+    watch_folder_autostart: true,
     watch_folder_path: "",
     watch_folder_output_path: "",
     watch_folder_default_preset: "",
@@ -1155,6 +1159,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (watchEnabled) {
       setPipelineToggle(watchEnabled, !!appSettings.watch_folder_enabled);
       syncPipelineFieldRow(watchEnabled);
+    }
+    const watchAutostart = document.getElementById("globalWatchFolderAutostart");
+    if (watchAutostart) {
+      setPipelineToggle(watchAutostart, appSettings.watch_folder_autostart !== false);
+      syncPipelineFieldRow(watchAutostart);
     }
     const watchPath = document.getElementById("settingsWatchFolderPath");
     if (watchPath) watchPath.value = appSettings.watch_folder_path || "";
@@ -1345,6 +1354,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ...collectSecretUpdates(),
       opensubtitles_username: document.getElementById("settingsOsUser")?.value || "",
       watch_folder_enabled: toggleOn("globalWatchFolderEnabled"),
+      watch_folder_autostart: toggleOn("globalWatchFolderAutostart"),
       watch_folder_path: (document.getElementById("settingsWatchFolderPath")?.value || "").trim(),
       watch_folder_output_path: (document.getElementById("settingsWatchFolderOutputPath")?.value || "").trim(),
       watch_folder_default_preset: document.getElementById("settingsWatchFolderPreset")?.value || "",
@@ -1515,6 +1525,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireSettingsToggle(document.getElementById("globalSubtitleSearch"));
   wireSettingsToggle(document.getElementById("globalSvtLowMemory"));
   wireSettingsToggle(document.getElementById("globalWatchFolderEnabled"));
+  wireSettingsToggle(document.getElementById("globalWatchFolderAutostart"));
   wireSettingsToggle(document.getElementById("globalAllowBuiltinPresetEdits"));
 
   const globalSvtLp = document.getElementById("globalSvtLp");
@@ -1851,9 +1862,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function presetNameSortKey(name) {
+    // Plain locale order puts "4K (noise)" before "4K HQ" because '(' < 'H'.
+    // Treat " (" as sorting after letters so base names stay grouped:
+    // 4K → 4K HQ → 4K (noise) → 4K (noise) HQ
+    return String(name || "").replace(/ \(/g, " \uFFFF(");
+  }
+
   function sortPresetsByName(presets) {
     return (presets || []).slice().sort((a, b) =>
-      String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
+      presetNameSortKey(a?.name).localeCompare(presetNameSortKey(b?.name), undefined, {
         sensitivity: "base",
         numeric: true,
       })
@@ -3263,10 +3281,124 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  function normalizeBrowsePath(path) {
+    return String(path || "").replace(/[\\/]+$/, "") || String(path || "");
+  }
+
+  function browseFolderLabel(path) {
+    const raw = String(path || "");
+    const trimmed = raw.replace(/[\\/]+$/, "");
+    if (!trimmed) return raw || "Folder";
+    // Drive roots like "D:" → "D:\"
+    if (/^[A-Za-z]:$/.test(trimmed)) return `${trimmed}\\`;
+    const parts = trimmed.split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] || trimmed;
+  }
+
+  function loadBrowseFavorites() {
+    try {
+      const raw = localStorage.getItem(BROWSE_FAVORITES_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(list)) return [];
+      return list
+        .map((entry) => {
+          if (typeof entry === "string") {
+            return { path: entry, name: browseFolderLabel(entry) };
+          }
+          if (entry && typeof entry.path === "string") {
+            return {
+              path: entry.path,
+              name: entry.name || browseFolderLabel(entry.path),
+            };
+          }
+          return null;
+        })
+        .filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveBrowseFavorites(list) {
+    localStorage.setItem(BROWSE_FAVORITES_KEY, JSON.stringify(list || []));
+  }
+
+  function isBrowseFavorite(path) {
+    const key = normalizeBrowsePath(path);
+    return loadBrowseFavorites().some((f) => normalizeBrowsePath(f.path) === key);
+  }
+
+  function addBrowseFavorite(path, name) {
+    if (!path) return;
+    const list = loadBrowseFavorites();
+    const key = normalizeBrowsePath(path);
+    if (list.some((f) => normalizeBrowsePath(f.path) === key)) return;
+    list.push({ path, name: name || browseFolderLabel(path) });
+    saveBrowseFavorites(list);
+    renderBrowseFavorites();
+  }
+
+  function removeBrowseFavorite(path) {
+    const key = normalizeBrowsePath(path);
+    const next = loadBrowseFavorites().filter((f) => normalizeBrowsePath(f.path) !== key);
+    saveBrowseFavorites(next);
+    renderBrowseFavorites();
+    // Refresh heart state on the current folder list without a full reload
+    document.querySelectorAll(".b-item-fav").forEach((btn) => {
+      const p = btn.getAttribute("data-path");
+      const on = isBrowseFavorite(p);
+      btn.classList.toggle("is-faved", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.title = on ? "Remove from favorites" : "Add to favorites";
+      btn.textContent = on ? "♥" : "♡";
+    });
+  }
+
+  function toggleBrowseFavorite(path, name) {
+    if (isBrowseFavorite(path)) removeBrowseFavorite(path);
+    else addBrowseFavorite(path, name);
+  }
+
+  function renderBrowseFavorites() {
+    if (!browserFavoritesList) return;
+    const favs = loadBrowseFavorites();
+    if (!favs.length) {
+      browserFavoritesList.innerHTML =
+        `<div class="browser-favorites-empty">Heart a folder to pin it here.</div>`;
+      return;
+    }
+    browserFavoritesList.innerHTML = favs.map((f) => `
+      <div class="browser-fav-item" data-path="${escapeHtml(f.path)}">
+        <button type="button" class="browser-fav-open" title="${escapeHtml(f.path)}">
+          <span aria-hidden="true">📁</span>
+          <span class="browser-fav-name">${escapeHtml(f.name)}</span>
+        </button>
+        <button type="button" class="browser-fav-remove" data-path="${escapeHtml(f.path)}"
+          title="Remove favorite" aria-label="Remove ${escapeHtml(f.name)}">✕</button>
+      </div>
+    `).join("");
+
+    browserFavoritesList.querySelectorAll(".browser-fav-open").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const row = btn.closest(".browser-fav-item");
+        const p = row && row.getAttribute("data-path");
+        if (p) openBrowser(p);
+      });
+    });
+    browserFavoritesList.querySelectorAll(".browser-fav-remove").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeBrowseFavorite(btn.getAttribute("data-path"));
+      });
+    });
+  }
+
   async function openBrowser(path) {
     browseModal.classList.remove("hidden");
     inspectorPanel.classList.add("hidden");
+    if (browserShell) browserShell.classList.remove("hidden");
     if (browserChrome) browserChrome.classList.remove("hidden");
+    renderBrowseFavorites();
     try {
       const res = await fetch(`/api/browse?path=${encodeURIComponent(path || "drives")}`);
       const data = await res.json();
@@ -3276,30 +3408,53 @@ document.addEventListener("DOMContentLoaded", () => {
 
       localStorage.setItem(LAST_BROWSE_PATH_KEY, data.current_path || "drives");
 
-      browserItemsList.innerHTML = data.items.map(item => `
+      browserItemsList.innerHTML = data.items.map(item => {
+        const faved = item.is_dir && isBrowseFavorite(item.path);
+        return `
         <div class="b-item" data-path="${escapeHtml(item.path)}" data-isdir="${item.is_dir}">
           ${item.is_dir
             ? `<span class="b-item-spacer" aria-hidden="true"></span>`
             : `<input type="checkbox" class="b-item-checkbox" data-path="${escapeHtml(item.path)}"
                  ${browserSelectedPaths.has(item.path) ? "checked" : ""} aria-label="Select ${escapeHtml(item.name)}">`}
-          <span>${item.is_dir ? "📁" : "🎬"}</span>
-          <span>${escapeHtml(item.name)}</span>
+          <span aria-hidden="true">${item.is_dir ? "📁" : "🎬"}</span>
+          <span class="b-item-name">${escapeHtml(item.name)}</span>
+          ${item.is_dir
+            ? `<button type="button" class="b-item-fav${faved ? " is-faved" : ""}" data-path="${escapeHtml(item.path)}"
+                 data-name="${escapeHtml(item.name)}" title="${faved ? "Remove from favorites" : "Add to favorites"}"
+                 aria-label="${faved ? "Remove from favorites" : "Add to favorites"}" aria-pressed="${faved ? "true" : "false"}">${faved ? "♥" : "♡"}</button>`
+            : ""}
         </div>
-      `).join("");
+      `;
+      }).join("");
 
       document.querySelectorAll(".b-item-checkbox").forEach(cb => {
         cb.addEventListener("click", (e) => e.stopPropagation());
         cb.addEventListener("change", () => toggleBrowserSelection(cb.getAttribute("data-path"), cb.checked));
       });
 
-      document.querySelectorAll(".b-item").forEach(el => {
+      document.querySelectorAll(".b-item-fav").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const p = btn.getAttribute("data-path");
+          const name = btn.getAttribute("data-name") || browseFolderLabel(p);
+          toggleBrowseFavorite(p, name);
+          const on = isBrowseFavorite(p);
+          btn.classList.toggle("is-faved", on);
+          btn.setAttribute("aria-pressed", on ? "true" : "false");
+          btn.title = on ? "Remove from favorites" : "Add to favorites";
+          btn.setAttribute("aria-label", btn.title);
+          btn.textContent = on ? "♥" : "♡";
+        });
+      });
+
+      document.querySelectorAll("#browserItemsList .b-item").forEach(el => {
         el.addEventListener("click", async () => {
           const isDir = el.getAttribute("data-isdir") === "true";
           const p = el.getAttribute("data-path");
           if (isDir) {
             openBrowser(p);
           } else {
-            document.querySelectorAll(".b-item").forEach(b => b.classList.remove("active"));
+            document.querySelectorAll("#browserItemsList .b-item").forEach(b => b.classList.remove("active"));
             el.classList.add("active");
             inspectFile(p);
           }
@@ -3308,7 +3463,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (e) {
       console.error(e);
     }
-    }
+  }
 
   // --- Folder picker (watch-folder settings) ---
   // Same server-side browsing as Add Files, folders only: the paths belong to
@@ -3558,7 +3713,8 @@ document.addEventListener("DOMContentLoaded", () => {
       showLoading(`Reading ${shortName}…`);
     }
     try {
-      if (browserChrome) browserChrome.classList.add("hidden");
+      if (browserShell) browserShell.classList.add("hidden");
+      else if (browserChrome) browserChrome.classList.add("hidden");
       inspectorPanel.classList.remove("hidden");
       inspFileName.textContent = shortName;
       inspVideoMeta.innerHTML = `<span class="badge badge-av1">Probing streams...</span>`;
@@ -3959,82 +4115,65 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   loadTestModeSettings();
 
-  function collectNonDefaultEncodeParams(cfg) {
+  function collectNonDefaultEncodeParamLines(cfg) {
     const c = cfg && typeof cfg === "object" ? cfg : {};
-    const rows = [];
+    const svt = (c.svt_params && typeof c.svt_params === "object") ? { ...c.svt_params } : {};
+    // Drop pipeline-owned / default SVT keys so the preview matches preset Preview.
+    Object.keys(svt).forEach((key) => {
+      const val = svt[key];
+      const def = ESSENTIAL_SVT_SETTINGS.find(d => d.key === key);
+      if (def && isSvtDefault(def, val)) delete svt[key];
+      else if (key === "lp" && Number(val) === 0) delete svt[key];
+      else if (key === "low-memory" && Number(val) === 0) delete svt[key];
+    });
 
-    const push = (key, value) => {
-      if (value === undefined || value === null || value === "") return;
-      rows.push({ key, value: String(value) });
-    };
-
-    const crf = Number(c.crf);
-    if (Number.isFinite(crf) && crf !== 35) push("crf", crf);
-
-    const presetSpeed = Number(c.preset);
-    if (Number.isFinite(presetSpeed) && presetSpeed !== 3) push("preset", presetSpeed);
-
-    const resolution = c.resolution_target || "source";
-    if (resolution !== "source") push("resolution_target", resolution);
-
-    const audio51 = c.audio_bitrate_51 || "320k";
-    if (audio51 !== "320k") push("audio_bitrate_51", audio51);
-
-    const audioStereo = c.audio_bitrate_stereo || "160k";
-    if (audioStereo !== "160k") push("audio_bitrate_stereo", audioStereo);
+    const lines = buildParamsPreviewLines({
+      crf: c.crf,
+      preset: c.preset,
+      resolution: c.resolution_target,
+      audio51: c.audio_bitrate_51,
+      audioStereo: c.audio_bitrate_stereo,
+      svt,
+    });
 
     const audioFmt = c.audio_format || "opus";
-    if (audioFmt !== "opus") push("audio_format", audioFmt);
+    if (audioFmt !== "opus") lines.push(`audio format: ${audioFmt}`);
 
     const container = c.container || "mp4";
-    if (container !== "mp4") push("container", container);
+    if (container !== "mp4") lines.push(`container: ${container}`);
 
-    if (c.autocrop === false) push("autocrop", "off");
-    if (c.ssimu2_post === true) push("ssimu2_post", "on");
-    if (c.extract_subtitles === false) push("extract_subtitles", "off");
-    if (c.audio_best_only === false) push("audio_best_only", "off");
+    if (c.autocrop === false) lines.push("autocrop: off");
+    if (c.ssimu2_post === true) lines.push("ssimu2_post: on");
+    if (c.extract_subtitles === false) lines.push("extract_subtitles: off");
+    if (c.audio_best_only === false) lines.push("audio_best_only: off");
 
     if (Array.isArray(c.audio_languages) && c.audio_languages.length) {
       const def = DEFAULT_AUDIO_LANGUAGES.join(",");
       if (c.audio_languages.map(langFamily).join(",") !== def) {
-        push("audio_languages", c.audio_languages.join(", "));
+        lines.push(`audio languages: ${c.audio_languages.join(", ")}`);
       }
     }
 
     if (c.test_mode) {
-      push("test_mode", `${c.trim_start || "?"} → ${c.trim_end || "?"}`);
+      lines.push(`test mode: ${c.trim_start || "?"} → ${c.trim_end || "?"}`);
     }
 
-    const svt = (c.svt_params && typeof c.svt_params === "object") ? c.svt_params : {};
-    Object.keys(svt).sort().forEach(key => {
-      const val = svt[key];
-      const def = ESSENTIAL_SVT_SETTINGS.find(d => d.key === key);
-      if (def && isSvtDefault(def, val)) return;
-      // lp default is 0 (omit); low-memory default off
-      if (key === "lp" && Number(val) === 0) return;
-      if (key === "low-memory" && Number(val) === 0) return;
-      push(key, val);
-    });
-
-    return rows;
+    return lines;
   }
 
   function renderEditJobParams(cfg, opts = {}) {
     const el = document.getElementById("editJobParams");
     if (!el) return;
-    const rows = collectNonDefaultEncodeParams(cfg);
-    const note = opts.outdated
-      ? `<p class="edit-job-params-note">Outdated from preset — showing this job’s snapshotted settings.</p>`
-      : "";
-    if (!rows.length) {
-      el.innerHTML = `${note}<div class="edit-job-params-empty">All settings at defaults.</div>`;
+    const lines = collectNonDefaultEncodeParamLines(cfg);
+    if (opts.outdated && lines.length) {
+      el.classList.remove("is-empty");
+      el.textContent = `Outdated from preset — showing this job’s snapshotted settings.\n\n${lines.join("\n")}`;
       return;
     }
-    el.innerHTML = note + rows.map(r => `
-      <div class="edit-job-params-row">
-        <span class="edit-job-params-key">${escapeHtml(r.key)}</span>
-        <span class="edit-job-params-val">${escapeHtml(r.value)}</span>
-      </div>`).join("");
+    const emptyText = opts.outdated
+      ? "Outdated from preset — all settings at defaults."
+      : "All settings at defaults.";
+    setParamsPreviewBody(el, lines, emptyText);
   }
 
   function closeEditJobModal() {

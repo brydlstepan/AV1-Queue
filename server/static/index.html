@@ -207,23 +207,29 @@
 
     <!-- File Browser & Track Inspector Modal -->
     <div class="modal-backdrop hidden" id="browseModal">
-      <div class="modal-window">
+      <div class="modal-window browse-modal-window">
         <div class="modal-header">
           <h3>Add Files</h3>
           <button class="modal-close" id="btnCloseModal">✕</button>
         </div>
-        <div class="modal-body">
-          <div class="browser-chrome" id="browserChrome">
-            <div class="browser-nav">
-              <button class="btn btn-sm btn-outline" id="btnBrowserUp">⬆ Up</button>
-              <div class="current-path-display" id="browserCurrentPath">This PC</div>
-            </div>
-            <div class="browser-items-list scroll-thin" id="browserItemsList"></div>
-            <div class="browser-selection-bar hidden" id="browserSelectionBar">
-              <span id="browserSelectionCount">0 selected</span>
-              <div class="browser-selection-actions">
-                <button class="btn btn-sm btn-outline" id="btnClearBrowserSelection">Clear</button>
-                <button class="btn btn-sm btn-primary" id="btnAddBrowserSelection">Add to Queue</button>
+        <div class="modal-body browse-modal-body">
+          <div class="browser-shell" id="browserShell">
+            <aside class="browser-favorites" aria-label="Favorite folders">
+              <div class="browser-favorites-title">Favorites</div>
+              <div class="browser-favorites-list scroll-thin" id="browserFavoritesList"></div>
+            </aside>
+            <div class="browser-chrome" id="browserChrome">
+              <div class="browser-nav">
+                <button class="btn btn-sm btn-outline" id="btnBrowserUp">⬆ Up</button>
+                <div class="current-path-display" id="browserCurrentPath">This PC</div>
+              </div>
+              <div class="browser-items-list scroll-thin" id="browserItemsList"></div>
+              <div class="browser-selection-bar hidden" id="browserSelectionBar">
+                <span id="browserSelectionCount">0 selected</span>
+                <div class="browser-selection-actions">
+                  <button class="btn btn-sm btn-outline" id="btnClearBrowserSelection">Clear</button>
+                  <button class="btn btn-sm btn-primary" id="btnAddBrowserSelection">Add to Queue</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1010,6 +1016,22 @@ Default: PSNR</span>
                   </button>
                 </div>
               </div>
+              <div class="setting-row is-default" data-pipeline-key="watchFolderAutostart">
+                <label class="setting-label" for="globalWatchFolderAutostart">
+                  <span class="setting-label-text">Start queue when a file is added</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">When the watch folder queues a new file and the queue isn't running, start it automatically. A paused queue stays paused. Starting also retries any jobs that were interrupted by a crash or restart, the same as pressing Start. Files picked up when the server starts count too.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalWatchFolderAutostart" title="Reset to default (On)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalWatchFolderAutostart" role="switch" aria-checked="true" data-default="true">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">On</span>
+                  </button>
+                </div>
+              </div>
               <div class="setting-row setting-row--stack" data-pipeline-key="watchFolderPath">
                 <div class="setting-row-head">
                   <label class="setting-label" for="settingsWatchFolderPath">
@@ -1119,17 +1141,15 @@ Default: PSNR</span>
           </div>
 
           <div id="editJobParamsSection" class="hidden">
-            <div class="preset-settings-fields scroll-thin">
-              <div class="edit-job-params-header">
-                <span class="edit-job-params-title">Non-default encode parameters</span>
+            <div class="preset-command-preview" id="editJobParamsPreview">
+              <div class="preset-command-preview-label">
+                Command variables <span class="preset-command-preview-hint">(non-defaults only)</span>
                 <span class="setting-help" tabindex="0" aria-label="Help">
                   <span class="setting-help-icon">?</span>
                   <span class="setting-help-tip" role="tooltip">Settings snapshotted on this queue item. Shown even when the job is outdated from its preset — these are what will encode until you save a new preset selection.</span>
                 </span>
               </div>
-              <div class="edit-job-params scroll-thin" id="editJobParams">
-                <div class="edit-job-params-empty">All settings at defaults.</div>
-              </div>
+              <pre class="preset-command-preview-body scroll-thin" id="editJobParams">All settings at defaults.</pre>
             </div>
           </div>
 
@@ -1215,6 +1235,6 @@ Default: PSNR</span>
     </div>
   </div>
 
-  <script src="/static/app.js?v=pass41"></script>
+  <script src="/static/app.js?v=pass42"></script>
 </body>
 </html>
