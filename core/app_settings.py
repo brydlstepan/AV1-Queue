@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -47,6 +48,9 @@ _DEFAULTS: Dict[str, Any] = {
     "watch_folder_default_preset": "",
     "hour_format": "24",
     "allow_builtin_preset_edits": False,
+    # Pipeline + Test Mode settings (see PIPELINE_KEYS). Empty until the UI has
+    # saved them once; queue jobs then follow these instead of a snapshot.
+    "pipeline": {},
 }
 
 
@@ -79,6 +83,67 @@ JOB_CONFIG_DEFAULTS: Dict[str, Any] = {
     "subtitle_kinds": ["standard"],
     "subtitle_strip_credits": True,
 }
+
+
+# Job config keys owned by the global Pipeline settings / Test Mode rather than
+# by the preset. A job keeps only its preset (crf, preset, resolution, audio
+# bitrates, svt_params) and per-job choices (audio/subtitle track picks, naming
+# edits); these follow the current settings: stamped on queued jobs when the
+# settings are saved, and re-applied when a job starts.
+PIPELINE_KEYS = (
+    "ssimu2", "container", "audio_format", "audio_languages", "audio_best_only",
+    "autocrop", "ssimu2_post", "extract_subtitles", "subtitle_strip_credits",
+    "test_mode_subtitles", "subtitle_languages", "subtitle_kinds",
+    "test_mode", "trim_start", "trim_end",
+)
+
+_HMS_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
+_PIPELINE_BOOLS = {
+    "audio_best_only", "autocrop", "ssimu2_post", "extract_subtitles",
+    "subtitle_strip_credits", "test_mode_subtitles", "test_mode",
+}
+_PIPELINE_CHOICES = {
+    "ssimu2": {"auto", "gpu", "cpu"},
+    "container": {"mp4", "webm"},
+    "audio_format": {"opus", "eac3"},
+}
+_PIPELINE_LISTS = {"audio_languages": False, "subtitle_languages": True, "subtitle_kinds": True}
+
+
+def normalize_pipeline(raw: Any) -> Dict[str, Any]:
+    """Keep only known pipeline keys with valid values; silently drop the rest."""
+    out: Dict[str, Any] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key in PIPELINE_KEYS:
+        if key not in raw:
+            continue
+        val = raw[key]
+        if key in _PIPELINE_BOOLS:
+            if isinstance(val, bool):
+                out[key] = val
+        elif key in _PIPELINE_CHOICES:
+            if isinstance(val, str) and val.lower() in _PIPELINE_CHOICES[key]:
+                out[key] = val.lower()
+        elif key in _PIPELINE_LISTS:
+            allow_empty = _PIPELINE_LISTS[key]
+            if isinstance(val, list):
+                items = [str(v).strip() for v in val if str(v).strip()]
+                if items or allow_empty:
+                    out[key] = items
+        elif key in ("trim_start", "trim_end"):
+            if isinstance(val, str) and _HMS_RE.match(val.strip()):
+                out[key] = val.strip()
+    # WebM cannot carry E-AC-3 (same rule the UI enforces)
+    if out.get("container") == "webm" and out.get("audio_format") == "eac3":
+        out["audio_format"] = "opus"
+    return out
+
+
+def get_pipeline_settings(settings: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """The saved pipeline overrides (only keys the UI has saved; may be empty)."""
+    data = settings if settings is not None else load_settings()
+    return normalize_pipeline(data.get("pipeline"))
 
 
 _cache_lock = threading.Lock()
@@ -128,7 +193,13 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     data = load_settings()
     for key in _DEFAULTS:
         if key in updates:
-            data[key] = updates[key]
+            if key == "pipeline":
+                # Partial updates merge (Test Mode saves only its own keys)
+                merged = dict(get_pipeline_settings(data))
+                merged.update(normalize_pipeline(updates[key]))
+                data[key] = merged
+            else:
+                data[key] = updates[key]
     path = _ensure_settings_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

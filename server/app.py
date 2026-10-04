@@ -250,6 +250,9 @@ class SettingsUpdateRequest(BaseModel):
     watch_folder_default_preset: Optional[str] = None
     hour_format: Optional[str] = None
     allow_builtin_preset_edits: Optional[bool] = None
+    # Pipeline + Test Mode settings (merged, validated in core/app_settings.py).
+    # Queued jobs are re-stamped on save and every job re-reads them at start.
+    pipeline: Optional[Dict[str, Any]] = None
 
 
 @app.get("/api/presets")
@@ -361,11 +364,35 @@ async def get_history():
     return items
 
 
+def _remove_history_file(target: Path) -> Optional[str]:
+    """
+    Delete a history record. Returns None on success, else the reason it failed.
+    Retried briefly: on Windows a file that was only just written can be locked
+    for a moment by antivirus / the search indexer, and the callers used to
+    swallow that error — leaving the record behind with no sign of why.
+    """
+    last = None
+    for attempt in range(6):
+        try:
+            target.unlink(missing_ok=True)
+            return None
+        except OSError as e:
+            last = e
+            try:
+                os.chmod(target, 0o666)  # a read-only flag also blocks the delete
+            except OSError:
+                pass
+            time.sleep(0.15 * (attempt + 1))
+    print(f"[history] could not delete {target.name}: {last}")
+    return str(last)
+
+
 @app.post("/api/history/delete")
 async def delete_history_item(req: ActionRequest):
     target = _history_path(req.job_id)
-    if target.exists():
-        target.unlink()
+    err = await asyncio.get_running_loop().run_in_executor(None, _remove_history_file, target)
+    if err:
+        raise HTTPException(status_code=500, detail=f"Could not delete the history record: {err}")
     return {"status": "ok"}
 
 
@@ -386,10 +413,7 @@ async def requeue_history_item(req: ActionRequest):
         job = queue_mgr.add_job(input_path, config=item.get("config"))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    try:
-        target.unlink()
-    except Exception:
-        pass
+    # A copy goes back to the queue; the history record stays as the record of the finished encode.
     return {"status": "ok", "job": job}
 
 
@@ -616,7 +640,27 @@ async def get_system_stats():
         "ram_total_gb": round(ram.total / (1024**3), 1),
         "gpu": gpu_info,
         "handbrake_available": handbrake_available(),
+        # lets the UI tell a restarted server from the one it was talking to
+        "pid": os.getpid(),
     }
+
+
+@app.post("/api/server/restart")
+async def restart_server():
+    """
+    Kill this server process and start a fresh one (sidebar restart button).
+    The replacement is launched first; if that fails the server stays up. A
+    running encode dies with the process and is marked "Interrupted — ready to
+    retry" when the new server loads the queue.
+    """
+    from core.server_restart import schedule_exit, spawn_replacement
+
+    try:
+        new_pid = spawn_replacement()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not start the replacement server: {e}")
+    schedule_exit(queue_mgr.pipeline.kill_all_processes)
+    return {"status": "restarting", "old_pid": os.getpid(), "new_pid": new_pid}
 
 
 @app.get("/api/settings")
@@ -641,6 +685,8 @@ async def update_settings(req: SettingsUpdateRequest):
         raise HTTPException(status_code=400, detail=str(e))
     if any(k.startswith("watch_folder_") for k in updates):
         _restart_watch_service()
+    if "pipeline" in updates:
+        queue_mgr.apply_pipeline_settings_to_queued()
     return {"status": "ok", "settings": data}
 
 
@@ -659,45 +705,6 @@ def get_available_drives():
     return drives
 
 
-@app.post("/api/dialog/pick_files")
-async def pick_files_dialog():
-    """Opens the native Windows File Explorer Open Dialog with multi-select using tkinter."""
-    import tkinter as tk
-    from tkinter import filedialog
-
-    def _run_picker():
-        selected = []
-        # Create a hidden root window
-        root = tk.Tk()
-        root.attributes("-topmost", True)
-        root.withdraw()
-        root.lift()
-        root.focus_force()
-
-        filetypes = [
-            ("Video Files", "*.mkv;*.mp4;*.ts;*.m2ts;*.mov;*.avi;*.webm"),
-            ("All Files", "*.*"),
-        ]
-        paths = filedialog.askopenfilenames(
-            parent=root,
-            title="Select Video Files to Transcode",
-            filetypes=filetypes,
-        )
-        if paths:
-            selected.extend(list(paths))
-        root.destroy()
-        # Resolve inside the worker — Path.resolve on large/network files can be
-        # slow and must not block the asyncio loop after the dialog closes.
-        return [str(Path(p).resolve()) for p in selected]
-
-    paths = await asyncio.get_running_loop().run_in_executor(None, _run_picker)
-
-    if paths:
-        return {"status": "ok", "paths": paths}
-
-    return {"status": "cancelled", "paths": []}
-
-
 @app.get("/api/browse")
 async def browse_directory(path: Optional[str] = None):
     """File/Directory navigation helper with drive selection."""
@@ -709,6 +716,9 @@ async def browse_directory(path: Optional[str] = None):
             "items": [{"name": d, "path": d, "is_dir": True, "size": 0} for d in drives]
         }
 
+    # A bare "E:" means "the current folder on E:" to Windows, not the drive root
+    if re.fullmatch(r"[A-Za-z]:", path.strip()):
+        path = path.strip() + "\\"
     target = _resolved_user_path(path)
     if not target.exists() or not target.is_dir():
         target = target.parent
