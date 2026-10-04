@@ -20,10 +20,13 @@ from core.handbrake_encode import (
     handbrake_available,
     hb_audio_track_numbers,
     parse_applied_crop,
+    split_removed_svt_params,
 )
 from core.hdr_dovi import svt_chroma_position
 from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format, target_height_for
-from core.app_settings import load_settings, JOB_CONFIG_DEFAULTS
+from core.app_settings import (
+    load_settings, save_settings, get_pipeline_settings, JOB_CONFIG_DEFAULTS,
+)
 from core.media_tagging import build_media_tag, library_output_path, output_hdr_label, refresh_media_tag_quality
 from core.subtitle_extract import select_default_subtitle_indices
 from core.subtitle_search import search_and_download_missing
@@ -135,6 +138,16 @@ def map_stage_progress(status: str, stage_percent: Optional[float] = None) -> fl
         return start
     pct = max(0.0, min(100.0, float(stage_percent)))
     return start + (end - start) * (pct / 100.0)
+
+
+def _stamp_log(msg: str) -> str:
+    """Prefix a job-log line with its local time: '[HH:MM:SS] text'.
+
+    24-hour and zero-padded so the prefix is always 10 characters and the
+    messages line up in the log. Stamped once here, where the line is stored, so
+    the live stream, the saved job log and the history view all show the same.
+    """
+    return f"[{time.strftime('%H:%M:%S')}] {msg}"
 
 
 def _resolved_str(path: Optional[str]) -> str:
@@ -380,6 +393,10 @@ class QueueManager:
                     list(sub_tracks) if sub_tracks is not None else []
                 )
 
+        # Saved pipeline / Test Mode settings win over whatever the caller sent
+        # (a stale browser, the watch folder): a job only keeps its preset.
+        default_config.update(get_pipeline_settings(settings))
+
         # Auto-pick audio only when the caller didn't specify a selection — the
         # probe-based default is otherwise computed and immediately discarded.
         if not has_audio_order:
@@ -541,15 +558,68 @@ class QueueManager:
             self.emit_event("job_update", job)
         return len(touched)
 
-    def apply_test_mode_to_queued(self, test_mode_config: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Stamp current Test Mode settings onto every QUEUED job (used on Start / toggle)."""
-        fields = {
-            "test_mode": bool(test_mode_config.get("test_mode")),
-        }
-        if fields["test_mode"]:
-            fields["trim_start"] = str(test_mode_config.get("trim_start") or JOB_CONFIG_DEFAULTS["trim_start"])
-            fields["trim_end"] = str(test_mode_config.get("trim_end") or JOB_CONFIG_DEFAULTS["trim_end"])
+    # Pipeline keys that change the output filename (extension / test suffix)
+    _NAMING_PIPELINE_KEYS = ("container", "test_mode", "trim_start", "trim_end")
 
+    def _stamp_pipeline_settings(
+        self, job: Dict[str, Any], overrides: Dict[str, Any], reserved: Set[str]
+    ) -> Dict[str, Any]:
+        """
+        Overlay the current pipeline settings onto a job's config. Caller holds
+        self._lock and owns ``reserved`` (a set it keeps updated across jobs).
+        Returns {key: (old, new)} for what actually changed — {} if nothing did.
+
+        A job only permanently keeps its preset and per-job picks; these keys
+        follow the current Pipeline / Test Mode settings. When a change alters
+        the output name (container, test range) the filename is rebuilt in the
+        same folder the job already writes to.
+        """
+        cfg = dict(job.get("config") or {})
+
+        def current(key: str) -> Any:
+            # A key the job never stored behaves as its default — not a change
+            val = cfg.get(key)
+            if val is None:
+                val = "auto" if key == "ssimu2" else JOB_CONFIG_DEFAULTS.get(key)
+            return val
+
+        changes = {k: (current(k), v) for k, v in overrides.items() if current(k) != v}
+        if not changes:
+            return {}
+        cfg.update(overrides)
+        job["config"] = cfg
+
+        if any(k in changes for k in self._NAMING_PIPELINE_KEYS):
+            tag = dict(job.get("media_tag") or {})
+            job_settings = dict(load_settings())
+            for k in ("name_template_movie", "name_template_episode"):
+                if cfg.get(k):
+                    job_settings[k] = cfg[k]
+            tag = refresh_media_tag_quality(
+                tag,
+                video=(job.get("media_info") or {}).get("video"),
+                hdr_info=(job.get("media_info") or {}).get("hdr"),
+                resolution_target=cfg.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
+                container=cfg.get("container") or JOB_CONFIG_DEFAULTS["container"],
+                settings=job_settings,
+            )
+            job["media_tag"] = tag
+            old_path = job.get("output_path") or ""
+            reserved.discard(_resolved_str(old_path))
+            desired = default_output_path(job["input_path"], cfg, tag)
+            if old_path:
+                # Stay in the folder the job already writes to
+                desired = str(Path(old_path).parent / Path(desired).name)
+            new_path = str(allocate_unique_output_path(desired, reserved=reserved))
+            job["output_path"] = new_path
+            reserved.add(_resolved_str(new_path))
+        return changes
+
+    def apply_pipeline_settings_to_queued(self) -> List[Dict[str, Any]]:
+        """Stamp the saved pipeline settings onto every QUEUED job (on Save / toggle)."""
+        overrides = get_pipeline_settings()
+        if not overrides:
+            return []
         updated: List[Dict[str, Any]] = []
         with self._lock:
             # Built once and mutated as paths are reassigned. Rebuilding it per
@@ -560,23 +630,36 @@ class QueueManager:
             for job in self.jobs:
                 if job.get("status") != JobStatus.QUEUED:
                     continue
-                cfg = dict(job.get("config") or {})
-                cfg.update(fields)
-                job["config"] = cfg
-                reserved.discard(_resolved_str(job.get("output_path")))
-                desired = default_output_path(
-                    job["input_path"], cfg, job.get("media_tag")
-                )
-                new_path = str(allocate_unique_output_path(desired, reserved=reserved))
-                job["output_path"] = new_path
-                reserved.add(_resolved_str(new_path))
-                updated.append(job)
+                if self._stamp_pipeline_settings(job, overrides, reserved):
+                    updated.append(job)
 
         if updated:
             self.save_queue()
             for job in updated:
                 self.emit_event("job_update", job)
         return updated
+
+    def apply_test_mode_to_queued(self, test_mode_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Save Test Mode as a pipeline setting, then stamp it onto every QUEUED job."""
+        fields: Dict[str, Any] = {"test_mode": bool(test_mode_config.get("test_mode"))}
+        if fields["test_mode"]:
+            fields["trim_start"] = str(test_mode_config.get("trim_start") or JOB_CONFIG_DEFAULTS["trim_start"])
+            fields["trim_end"] = str(test_mode_config.get("trim_end") or JOB_CONFIG_DEFAULTS["trim_end"])
+        save_settings({"pipeline": fields})
+        return self.apply_pipeline_settings_to_queued()
+
+    def _refresh_pipeline_settings_for_start(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        """Re-read the pipeline settings as a job starts. Returns what changed."""
+        overrides = get_pipeline_settings()
+        if not overrides:
+            return {}
+        with self._lock:
+            reserved = self._reserved_output_paths(exclude_job_id=job["id"])
+            changes = self._stamp_pipeline_settings(job, overrides, reserved)
+        if changes:
+            self.save_queue()
+            self.emit_event("job_update", job)
+        return changes
 
     def requeue_job(self, job_id: str) -> Dict[str, Any]:
         """Reset a cancelled/failed job back to QUEUED so it can be edited and run again."""
@@ -933,7 +1016,13 @@ class QueueManager:
             self.emit_event("job_update", job)
         partial = out_path.with_name(f"{out_path.stem}.partial{out_path.suffix}")
 
-        hb_params = dict(svt_params)
+        hb_params, removed_svt = split_removed_svt_params(svt_params)
+        if removed_svt:
+            append_log(
+                "Ignoring SVT option(s) removed in Tritium 4.2: " + ", ".join(removed_svt)
+                + " — edit the preset to clear them",
+                update_stage=False,
+            )
         # HandBrake leaves the AV1 chroma siting unset; take it from the source
         chroma = svt_chroma_position(hdr_analysis.get("chroma_location"))
         if chroma:
@@ -1107,6 +1196,10 @@ class QueueManager:
             if self.current_job_id == job_id:
                 self.current_job_id = None
             return
+        # Pipeline / Test Mode settings are read now, as the job starts — the job
+        # only permanently keeps its preset. (Also refreshes the output name if
+        # the container or test range changed since it was queued.)
+        pipeline_changes = self._refresh_pipeline_settings_for_start(job)
         inp_path = Path(job["input_path"])
         out_path = Path(job["output_path"])
         cfg = job["config"]
@@ -1218,15 +1311,23 @@ class QueueManager:
                 raise RuntimeError("E-AC-3 audio requires MP4 container (WebM only supports Opus).")
 
             def append_log(msg: str, update_stage: bool = False):
+                line = _stamp_log(msg)
                 with progress_lock:
-                    job["logs"].append(msg)
+                    job["logs"].append(line)
                     if len(job["logs"]) > 200:
                         job["logs"].pop(0)
                     if update_stage:
-                        job["stage"] = msg
+                        job["stage"] = msg  # stage text stays unstamped
                     job["elapsed_seconds"] = int(time.time() - start_time)
                     last_progress_emit[0] = time.monotonic()
-                    self.emit_event("job_progress", self._progress_payload(job, log=msg))
+                    self.emit_event("job_progress", self._progress_payload(job, log=line))
+
+            if pipeline_changes:
+                append_log(
+                    "Pipeline settings applied at start: "
+                    + ", ".join(f"{k} {old} → {new}" for k, (old, new) in pipeline_changes.items()),
+                    update_stage=False,
+                )
 
             if (hdr_analysis.get("is_dovi") or hdr_analysis.get("is_hdr")
                     or hdr_analysis.get("is_hdr10plus")
@@ -1340,6 +1441,8 @@ class QueueManager:
                     return  # don't raise into stdout reader (mis-labels cancel)
 
                 raw = data.get("raw_log", "")
+                if raw:
+                    raw = _stamp_log(raw)
                 with progress_lock:
                     if raw:
                         job["logs"].append(raw)

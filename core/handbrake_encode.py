@@ -44,6 +44,19 @@ PROGRESS_RE = re.compile(
 
 _MIXDOWN = {6: "5point1", 2: "stereo", 1: "mono"}
 
+# SVT options Tritium 4.2.0 no longer has. HandBrake doesn't fail on them — it
+# logs "error parsing option …" and encodes without — so a preset that still
+# carries one silently loses the setting. Dropped here so the command (and the
+# HandBrake log) stays clean; the queue notes it in the job log.
+REMOVED_SVT_PARAMS = frozenset({"enable-daala-rd", "enable-daala-filtering"})
+
+
+def split_removed_svt_params(svt_params: Dict[str, Any]) -> tuple:
+    """(params the encoder understands, sorted names of removed ones that were present)."""
+    kept = {k: v for k, v in (svt_params or {}).items() if str(k).lstrip("-") not in REMOVED_SVT_PARAMS}
+    dropped = sorted(str(k).lstrip("-") for k in (svt_params or {}) if str(k).lstrip("-") in REMOVED_SVT_PARAMS)
+    return kept, dropped
+
 # Frames HandBrake samples across the title for crop detection (its default
 # is 10). Tested with a synthetic title whose full-frame section was 3% of the
 # runtime: 10 samples cropped it away, 30 kept the full frame.

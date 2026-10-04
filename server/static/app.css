@@ -248,6 +248,41 @@ body {
   font-size: 12px;
 }
 
+/* Settings + restart on one line: Settings takes the remaining width, the restart
+   button is a 1:1 square the same height as Settings. Both get one explicit height
+   (aspect-ratio can't resolve against a flex-stretched height). */
+.sidebar-button-row {
+  --sidebar-btn-size: 32px;
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.sidebar-button-row > .btn {
+  height: var(--sidebar-btn-size);
+  box-sizing: border-box;
+}
+
+.sidebar-button-row > .btn:first-child {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.btn-square {
+  flex: 0 0 var(--sidebar-btn-size);
+  width: var(--sidebar-btn-size);
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.btn-square:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
 .hidden { display: none !important; }
 
 .workspace-layout {
@@ -694,7 +729,8 @@ body {
 .terminal-box.collapsed { display: none; }
 
 .terminal-logs div {
-  padding: 2px 0;
+  padding: 2px 0 2px 10ch;
+  text-indent: -10ch; /* hang wrapped lines under the text, past the "[HH:MM:SS] " stamp */
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -856,49 +892,15 @@ body {
 }
 
 .queue-header-actions > .btn.btn-sm,
-.queue-header-actions > .drop-zone,
 .queue-header-actions > .test-mode-control {
   height: 34px;
   min-height: 34px;
   box-sizing: border-box;
 }
 
-.queue-header-actions > .drop-zone,
+.queue-header-actions > #dropZone,
 .queue-header-actions > .test-mode-control {
   width: 156px;
-}
-
-.drop-zone {
-  border: 1px dashed #333333;
-  border-radius: var(--radius-btn);
-  padding: 0 14px;
-  background: var(--bg-main);
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  max-width: none;
-  user-select: none;
-}
-
-.drop-zone:hover,
-.drop-zone.dragover {
-  border-color: var(--accent);
-  background: var(--accent-softer);
-}
-
-.drop-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.drop-zone:hover .drop-label,
-.drop-zone.dragover .drop-label {
-  color: var(--accent);
 }
 
 .queue-card-left {
@@ -1292,6 +1294,39 @@ body {
   background: var(--bg-selected);
   color: var(--text-main);
   font-weight: 600;
+}
+
+.b-item-checkbox {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+/* Directory rows have no checkbox — keep the icon/name aligned with file rows */
+.b-item-spacer {
+  flex: 0 0 auto;
+  width: 15px;
+}
+
+.browser-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-top: -10px;
+  margin-bottom: 18px;
+  background: var(--accent-softer);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.browser-selection-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .inspector-panel {
@@ -1871,6 +1906,10 @@ select.form-input {
 
 .preset-section-tabs .tab-btn.active {
   border-color: var(--accent);
+}
+
+.log-report-tabs {
+  margin: 14px 0 12px;
 }
 
 .preset-advanced-fields {

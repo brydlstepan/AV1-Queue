@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=pass34">
+  <link rel="stylesheet" href="/static/app.css?v=pass39">
 </head>
 <body>
   <div class="app-container">
@@ -68,9 +68,13 @@
               <div class="gauge-bar-track"><div class="gauge-bar-fill ram-fill" id="ramBar"></div></div>
             </div>
           </div>
-          <button type="button" class="btn btn-outline btn-sm" id="btnPipelineSettings" style="margin-top: 14px; width: 100%;">
-            Settings
-          </button>
+          <div class="sidebar-button-row">
+            <button type="button" class="btn btn-outline btn-sm" id="btnPipelineSettings">
+              Settings
+            </button>
+            <button type="button" class="btn btn-outline btn-sm btn-square" id="btnRestartServer"
+              title="Restart server" aria-label="Restart server">↻</button>
+          </div>
         </section>
       </aside>
 
@@ -160,9 +164,9 @@
                 <span class="queue-count-badge" id="queueCountBadge">0 Jobs</span>
               </div>
               <div class="queue-header-actions">
-                <div class="drop-zone" id="dropZone" title="Click or drop video files (MKV, MP4, TS, M2TS)">
-                  <span class="drop-label">Add video files</span>
-                </div>
+                <button type="button" class="btn btn-sm btn-outline" id="dropZone" title="Browse files on this PC (MKV, MP4, TS, M2TS)">
+                  Add video files
+                </button>
                 <div class="test-mode-control" id="testModeControl">
                   <button type="button" class="test-mode-switch" id="btnTestModeToggle" role="switch" aria-checked="false" title="Toggle Test Mode">
                     <span class="test-mode-switch-label">Test Mode</span>
@@ -205,17 +209,23 @@
     <div class="modal-backdrop hidden" id="browseModal">
       <div class="modal-window">
         <div class="modal-header">
-          <h3>File & Track Inspector</h3>
+          <h3>Add Files</h3>
           <button class="modal-close" id="btnCloseModal">✕</button>
         </div>
         <div class="modal-body">
           <div class="browser-chrome" id="browserChrome">
             <div class="browser-nav">
               <button class="btn btn-sm btn-outline" id="btnBrowserUp">⬆ Up</button>
-              <button class="btn btn-sm btn-secondary" id="btnOpenNativeFromModal">Windows File Dialog</button>
               <div class="current-path-display" id="browserCurrentPath">This PC</div>
             </div>
-            <div class="browser-items-list" id="browserItemsList"></div>
+            <div class="browser-items-list scroll-thin" id="browserItemsList"></div>
+            <div class="browser-selection-bar hidden" id="browserSelectionBar">
+              <span id="browserSelectionCount">0 selected</span>
+              <div class="browser-selection-actions">
+                <button class="btn btn-sm btn-outline" id="btnClearBrowserSelection">Clear</button>
+                <button class="btn btn-sm btn-primary" id="btnAddBrowserSelection">Add to Queue</button>
+              </div>
+            </div>
           </div>
 
           <!-- Selected File Inspector Panel -->
@@ -330,14 +340,14 @@ Default: 35</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
                     <span class="setting-help-tip" role="tooltip">--preset
-Lower is slower / higher quality per given CRF, higher is faster. This is a single direct encode pass — Tritium has no separate fast/final pass speeds. (-3 to 13)
+Lower is slower / higher quality per given CRF, higher is faster. This is a single direct encode pass — Tritium has no separate fast/final pass speeds. (-3 to 10, HandBrake's range; at 4K the encoder caps random-access encodes at 9)
 Default: 3</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default basic-reset" data-target="pEditPreset" title="Reset to default (3)" aria-label="Reset to default">↺</button>
                 <div class="setting-control">
                   <div class="svt-slider-wrap">
-                    <input type="range" id="pEditPreset" class="basic-field svt-slider svt-slider--reversed" data-default="3" min="-3" max="13" step="1">
+                    <input type="range" id="pEditPreset" class="basic-field svt-slider svt-slider--reversed" data-default="3" min="-3" max="10" step="1">
                     <span class="svt-slider-val" id="pEditPreset_val">3</span>
                   </div>
                 </div>
@@ -348,7 +358,7 @@ Default: 3</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
                     <span class="setting-help-tip" role="tooltip">--tune
-VQ leans toward visual preference; SSIM/MS-SSIM toward structural similarity; IQ tunes for image quality metrics; Film Grain tunes for grain-heavy sources.
+VQ leans toward visual preference; SSIM/MS-SSIM toward structural similarity; VMAF targets VMAF (video only, new in Tritium 4.2); Film Grain tunes for grain-heavy sources. Note: Film Grain is 6 now — 5 became VMAF.
 Default: PSNR</span>
                   </span>
                 </label>
@@ -358,9 +368,9 @@ Default: PSNR</span>
                     <option value="0">VQ (Visual Quality)</option>
                     <option value="1">PSNR (Default)</option>
                     <option value="2">SSIM</option>
-                    <option value="3">IQ (Image Quality)</option>
                     <option value="4">MS-SSIM</option>
-                    <option value="5">Film Grain</option>
+                    <option value="5">VMAF (video only)</option>
+                    <option value="6">Film Grain</option>
                   </select>
                 </div>
               </div>
@@ -1125,8 +1135,16 @@ Default: PSNR</span>
         </div>
         <div class="modal-body">
           <div class="log-report-summary" id="logReportSummary"></div>
-          <div class="terminal-box scroll-thin" style="max-height: 380px; margin-top: 14px;" id="logModalTerminal">
+          <div class="preset-section-tabs log-report-tabs">
+            <button type="button" class="tab-btn active" id="logTabLog">Log</button>
+            <button type="button" class="tab-btn" id="logTabParams">Params</button>
+          </div>
+          <div class="terminal-box scroll-thin" style="max-height: 380px;" id="logModalTerminal">
             <div class="terminal-logs" id="logModalContent"></div>
+          </div>
+          <div class="preset-command-preview hidden" id="logModalParams">
+            <div class="preset-command-preview-label">Command variables <span class="preset-command-preview-hint">(non-defaults only)</span></div>
+            <pre class="preset-command-preview-body scroll-thin" style="max-height: 380px;" id="logModalParamsBody"></pre>
           </div>
         </div>
       </div>
@@ -1161,6 +1179,6 @@ Default: PSNR</span>
     </div>
   </div>
 
-  <script src="/static/app.js?v=pass34"></script>
+  <script src="/static/app.js?v=pass39"></script>
 </body>
 </html>

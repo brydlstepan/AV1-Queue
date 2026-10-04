@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -64,24 +65,58 @@ def _port() -> int:
     return 8765
 
 
+def _wait_for_previous_server() -> bool:
+    """
+    A restart (core/server_restart.py) starts this process before the old one has
+    exited and passes its PID. Wait for it to be gone first: on Windows
+    SO_REUSEADDR lets a second socket bind a port that is still listening, so
+    binding early would split connections between the two servers.
+    Returns True when this launch is a restart.
+    """
+    raw = os.environ.pop("AV1QUEUE_WAIT_PID", "").strip()
+    if not raw.isdigit():
+        return False
+    pid = int(raw)
+    try:
+        import psutil
+
+        psutil.Process(pid).wait(timeout=30)
+    except Exception as e:  # NoSuchProcess = already gone; anything else: carry on and retry the bind
+        if type(e).__name__ != "NoSuchProcess":
+            print(f"[av1queue] Previous server (pid {pid}) did not exit cleanly: {e}", file=sys.stderr)
+    return True
+
+
+def _bind_all(hosts: list, port: int, attempts: int) -> list:
+    last_err = None
+    for attempt in range(attempts):
+        sockets: list = []
+        try:
+            for host in hosts:
+                family = socket.AF_INET6 if ":" in host else socket.AF_INET
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((host, port))
+                sock.listen(2048)
+                sockets.append(sock)
+            return sockets
+        except OSError as e:
+            last_err = e
+            for s in sockets:
+                s.close()
+            if attempt + 1 < attempts:
+                time.sleep(0.5)
+    print(f"[!] Could not bind {hosts} on port {port}: {last_err}", file=sys.stderr)
+    raise SystemExit(1)
+
+
 def main() -> None:
     port = _port()
     hosts = _bind_hosts()
 
-    sockets = []
-    try:
-        for host in hosts:
-            family = socket.AF_INET6 if ":" in host else socket.AF_INET
-            sock = socket.socket(family, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((host, port))
-            sock.listen(2048)
-            sockets.append(sock)
-    except OSError as e:
-        for s in sockets:
-            s.close()
-        print(f"[!] Could not bind {hosts} on port {port}: {e}", file=sys.stderr)
-        raise SystemExit(1)
+    restarting = _wait_for_previous_server()
+    # After a restart the port can take a moment to be released
+    sockets = _bind_all(hosts, port, attempts=20 if restarting else 1)
 
     print(f"[av1queue] Listening on: {', '.join(f'{h}:{port}' for h in hosts)}")
     if any(h not in ("127.0.0.1", "::1") for h in hosts):

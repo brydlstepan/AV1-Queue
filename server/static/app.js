@@ -16,6 +16,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const STRIP_SUB_CREDITS_KEY = "av1queue_subtitle_strip_credits";
   const TEST_MODE_SUBS_KEY = "av1queue_test_mode_subtitles";
   const CONTAINER_KEY = "av1queue_container";
+  const LAST_BROWSE_PATH_KEY = "av1queue_last_browse_path";
   const SVT_LP_KEY = "av1queue_svt_lp";
   const SVT_LOW_MEMORY_KEY = "av1queue_svt_low_memory";
   const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]";
@@ -96,12 +97,18 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   let selectedPreset = localStorage.getItem(DEFAULT_PRESET_KEY) || "";
   let currentBrowserPath = "";
+  let currentBrowserParent = null;
   let currentProbedMedia = null;
 
-  // SVT-AV1-Tritium defaults (fork previously vendored as SVT-AV1-Essential;
-  // flag surface confirmed by running `SvtAv1EncApp.exe --help` directly —
-  // Tritium has no --full-help, --help alone lists everything).
+  // SVT-AV1-Tritium defaults and ranges, as of the encoder embedded in HandBrake
+  // (SVT-AV1-Tritium v4.2.0 "Ghost Robot"). Defaults come from the encoder's own
+  // svt_av1_set_default_params; ranges from the errors the engine itself reports
+  // for out-of-range values, cross-checked with Docs/Parameters.md (which lags the
+  // code in places — e.g. it still lists enable-cdef as 0–1).
+  // A default of -1 means "auto / preset decides" and is never passed through (the
+  // engine's parser rejects -1 for some of these), so only an explicit choice is written.
   // control: toggle (0/1), select (small int range), slider (wide bounded range), number (free / wide unbounded)
+  // labels: optional {value: text} shown next to a select's numeric value.
   // Labels are always the raw flag name (no --) — no separate human label field.
   // Basic tab already owns: --preset, --crf, --tune
   // Not exposed here, deliberately:
@@ -113,9 +120,11 @@ document.addEventListener("DOMContentLoaded", () => {
   //  - qindex-offsets, chroma-qindex-offsets, lambda-scale-factors,
   //    sframe-posi/-qp/-qp-offset, force-key-frames, frame-resz-*: comma-
   //    separated structured lists, not a single value.
-  //  - luma-y-dc/chroma-u-dc/chroma-u-ac/chroma-v-dc/chroma-v-ac-qindex-offset,
-  //    recode-loop: --help prints no default/range for these — not worth
-  //    guessing bounds for.
+  //  - recode-loop: no documented default/range — not worth guessing bounds for.
+  //  - frame-resz-events/-denoms/-kf-denoms, lookahead: structured per-frame lists /
+  //    "auto" can't be passed explicitly (lookahead's auto is -1, which the parser rejects).
+  //  Removed in 4.2.0 (the parser rejects them, HandBrake just drops them): enable-daala-rd,
+  //  enable-daala-filtering — see REMOVED_SVT_PARAMS in core/handbrake_encode.py.
   //  - rc, qp, tbr, mbr, use-q-file, max-qp, min-qp, undershoot-pct,
   //    overshoot-pct, mbr-overshoot-pct, minsection-pct, maxsection-pct,
   //    buf-sz, buf-initial-sz, buf-optimal-sz, pass, stats, passes: VBR/CBR
@@ -152,8 +161,8 @@ document.addEventListener("DOMContentLoaded", () => {
     { key: "noise-adaptive-filtering", category: "Film Grain & Noise", control: "select", min: 0, max: 4, step: 1, default: 2,
       help: "Disables CDEF/restoration when noise is high. 0 off; 1 both; 2 default tune behavior; 3 CDEF only; 4 restoration only." },
 
-    { key: "enable-dlf", category: "Loop Filters & Deringing", control: "select", min: 0, max: 2, step: 1, default: 1,
-      help: "Deblocking loop filter control. 0 off; 1 on (default); 2 more accurate filter (modest extra cost)." },
+    { key: "enable-dlf", category: "Loop Filters & Deringing", control: "select", min: 0, max: 3, step: 1, default: 1,
+      help: "Deblocking loop filter control. 0 off; 1 on (default); 2 slower, more accurate filtering; 3 maximum accuracy (slowest)." },
     { key: "enable-variance-boost", category: "Variance & Adaptive Quality", control: "toggle", min: 0, max: 1, step: 1, default: 1,
       help: "Improves quality allocation based on local variance. Strength 3 is PQ/HDR-oriented." },
     { key: "variance-boost-strength", category: "Variance & Adaptive Quality", control: "select", min: 1, max: 4, step: 1, default: 2,
@@ -162,38 +171,41 @@ document.addEventListener("DOMContentLoaded", () => {
       help: "Octile used by Variance Boost." },
     { key: "variance-boost-curve", category: "Variance & Adaptive Quality", control: "select", min: 0, max: 3, step: 1, default: 0,
       help: "Selects which response curve Variance Boost uses when mapping local variance to QP adjustment." },
-    { key: "qp-scale-compress-strength", category: "Variance & Adaptive Quality", control: "slider", min: 0, max: 8, step: 0.05, default: 1.0,
+    { key: "qp-scale-compress-strength", category: "Variance & Adaptive Quality", control: "slider", min: 0, max: 8, step: 0.1, default: 1.0,
       help: "Increases temporal quality consistency, especially with film grain or fast motion. Usually not advised above 3." },
     { key: "max-tx-size", category: "Transform & Mode Decision", control: "select", min: 32, max: 64, step: 32, default: 64,
       help: "Limits allowed transform sizes to 32 or 64 (default 64)." },
-    { key: "ac-bias", category: "Transform & Mode Decision", control: "slider", min: 0, max: 8, step: 0.05, default: 1.0,
+    { key: "ac-bias", category: "Transform & Mode Decision", control: "slider", min: 0, max: 8, step: 0.1, default: 1.0,
       help: "Strength of AC bias in rate-distortion (0–8)." },
     { key: "kf-tf-strength", category: "Temporal Filtering", control: "select", min: 0, max: 4, step: 1, default: 1,
       help: "Adjust temporal filtering strength specifically for keyframes (mirrors tf-strength, keyframe-only)." },
-    { key: "alt-lambda-factors", category: "Transform & Mode Decision", control: "toggle", min: 0, max: 1, step: 1, default: 1,
-      help: "Enable alternate rate-distortion lambda weighting factors." },
+    { key: "alt-lambda-factors", category: "Transform & Mode Decision", control: "toggle", min: 0, max: 1, step: 1, default: 0,
+      help: "Use the alternative RDO lambda factors (carried over from SVT-AV1 3.0.2). Off by default." },
     { key: "sharp-tx", category: "Transform & Mode Decision", control: "toggle", min: 0, max: 1, step: 1, default: 1,
       help: "Biases transform selection toward sharper detail retention." },
     { key: "alt-ssim-tuning", category: "Transform & Mode Decision", control: "toggle", min: 0, max: 1, step: 1, default: 0,
       help: "Enables alternate SSIM-oriented rate-distortion tuning adjustments (pairs well with --tune 2/SSIM)." },
-    { key: "hbd-mds", category: "Transform & Mode Decision", control: "select", min: 0, max: 2, step: 1, default: 0,
-      help: "High bit-depth mode decision. 0 = preset-determined; 1 = 10-bit; 2 = hybrid 8/10-bit." },
+    { key: "hbd-mds", category: "Transform & Mode Decision", control: "select", min: -1, max: 2, step: 1, default: -1,
+      labels: { "-1": "preset default" },
+      help: "High bit-depth mode decision. -1 = preset default; 0 = full 8-bit MD; 1 = full 10-bit MD; 2 = hybrid 8/10-bit MD. 10-bit MD only works with 10-bit input." },
     { key: "tx-bias", category: "Transform & Mode Decision", control: "select", min: 0, max: 3, step: 1, default: 0,
       help: "Transform size/type bias. 0 off; 1 full; 2 size only; 3 interpolation only." },
     { key: "complex-hvs", category: "Transform & Mode Decision", control: "toggle", min: 0, max: 1, step: 1, default: 0,
       help: "Highest-complexity HVS model. Can improve psychovisual quality at extra CPU cost." },
     { key: "cdef-scaling", category: "Loop Filters & Deringing", control: "slider", min: 1, max: 30, step: 1, default: 15,
-      help: "Scales CDEF strength computation. 15 = 1× (default); 8 ≈ 0.5×; 30 = 2×; 1 = minimum." },
+      help: "Scales CDEF strength computation. 15 = 1× (default); 8 ≈ 0.5×; 30 = 2×; 1 = minimum. Ignored when CDEF is off, and forced to 15 while enable-alt-cdef is on." },
     { key: "auto-tiling", category: "Tiling, Decode & Screen Content", control: "toggle", min: 0, max: 1, step: 1, default: 1,
       help: "Automatically sets tiles for the source resolution to improve decode performance with minimal efficiency loss." },
     { key: "enable-tf", category: "Temporal Filtering", control: "select", min: 0, max: 3, step: 1, default: 1,
       help: "Enable ALT-REF (temporally filtered) frames. Mode 3 enables a stronger filter on all frames (useful as a temporal denoiser)." },
     { key: "enable-overlays", category: "Temporal Filtering", control: "toggle", min: 0, max: 1, step: 1, default: 0,
       help: "Insert overlay pictures as an extra reference for the base layer." },
-    { key: "enable-cdef", category: "Loop Filters & Deringing", control: "toggle", min: 0, max: 1, step: 1, default: 1,
-      help: "Constrained Directional Enhancement Filter (deringing)." },
-    { key: "enable-restoration", category: "Loop Filters & Deringing", control: "toggle", min: 0, max: 1, step: 1, default: 1,
-      help: "Loop restoration filter." },
+    { key: "enable-cdef", category: "Loop Filters & Deringing", control: "select", min: -1, max: 10, step: 1, default: -1,
+      labels: { "-1": "auto", "0": "off" },
+      help: "Constrained Directional Enhancement Filter (deringing) level. -1 = auto (default, chosen by the preset, cheaper at fast presets); 0 = off; 1 = best quality, slowest; 2–10 = progressively cheaper searches. Overridden to 1 while enable-alt-cdef is 2 or 3." },
+    { key: "enable-restoration", category: "Loop Filters & Deringing", control: "select", min: -1, max: 1, step: 1, default: -1,
+      labels: { "-1": "auto", "0": "off", "1": "on" },
+      help: "Loop restoration filter. -1 = auto (default, chosen by the preset); 0 = off; 1 = on." },
     { key: "enable-mfmv", category: "Temporal Filtering", control: "select", min: -1, max: 1, step: 1, default: -1,
       help: "Motion field motion vector prediction. -1 auto (default); 0 off; 1 on." },
     { key: "enable-dg", category: "Temporal Filtering", control: "toggle", min: 0, max: 1, step: 1, default: 1,
@@ -201,15 +213,11 @@ document.addEventListener("DOMContentLoaded", () => {
     { key: "scm", category: "Tiling, Decode & Screen Content", control: "select", min: 0, max: 3, step: 1, default: 2,
       help: "Screen content detection. 0 off, 1 on, 2 content-adaptive (default), 3 adaptive + anti-alias aware." },
     { key: "enable-alt-cdef", category: "Loop Filters & Deringing", control: "select", min: 0, max: 3, step: 1, default: 0,
-      help: "Alternative CDEF trade-offs: typically weaker deringing but better fidelity. Higher values can raise distortion at fast presets. 2–3 force best CDEF quality (slower)." },
+      help: "Alternative CDEF trade-offs: typically weaker deringing but better fidelity. Higher values can raise distortion at fast presets. 2–3 force CDEF level 1 (best quality, slower), overriding enable-cdef. Any non-zero value also forces cdef-scaling to 15." },
     { key: "enable-alt-dlf", category: "Loop Filters & Deringing", control: "select", min: 0, max: 3, step: 1, default: 0,
       help: "Alternative DLF trade-offs: typically weaker deblocking but better fidelity. Pair with enable-dlf 2 for best loop-filter quality (slower)." },
     { key: "enable-daala", category: "Loop Filters & Deringing", control: "select", min: 0, max: 4, step: 1, default: 0,
       help: "Daala perceptual distortion metric (frequency-domain masking). 0 off; 1 CDEF; 2 + TX search / MDS3; 3 + DCT TX; 4 + MDS0 / IFS RD / OBMC." },
-    { key: "enable-daala-rd", category: "Loop Filters & Deringing", control: "toggle", min: 0, max: 1, step: 1, default: 0,
-      help: "Use Daala distortion in model RD curvfit. Requires enable-daala." },
-    { key: "enable-daala-filtering", category: "Loop Filters & Deringing", control: "select", min: 0, max: 3, step: 1, default: 0,
-      help: "Use Daala distortion in filtering decisions (0–3). Requires enable-daala." },
     { key: "fast-decode", category: "Tiling, Decode & Screen Content", control: "select", min: 0, max: 2, step: 1, default: 0,
       help: "Fast decoder levels. Higher values favor easier decode at some efficiency/quality cost." },
 
@@ -218,10 +226,20 @@ document.addEventListener("DOMContentLoaded", () => {
       help: "Adaptive QP allocation. 0 off; 1 variance-based (AV1 segments); 2 deltaQ prediction-efficiency." },
     { key: "use-fixed-qindex-offsets", category: "Rate Control & QP Bias", control: "select", min: 0, max: 2, step: 1, default: 0,
       help: "Overrides the encoder's per-layer hierarchical QP assignment with fixed Q-index offsets instead." },
-    { key: "key-frame-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -256, max: 255, step: 1, default: 0,
-      help: "Q-index offset applied to keyframes only." },
-    { key: "key-frame-chroma-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -256, max: 255, step: 1, default: 0,
-      help: "Chroma Q-index offset applied to keyframes only." },
+    { key: "key-frame-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -64, max: 63, step: 1, default: 0,
+      help: "Q-index offset applied to keyframes only (−64 to 63)." },
+    { key: "key-frame-chroma-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -64, max: 63, step: 1, default: 0,
+      help: "Chroma Q-index offset applied to keyframes only (−64 to 63)." },
+    { key: "luma-y-dc-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -64, max: 63, step: 1, default: 0,
+      help: "Luma (Y) DC Q-index offset (−64 to 63)." },
+    { key: "chroma-u-dc-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -64, max: 63, step: 1, default: 0,
+      help: "Chroma U DC Q-index offset (−64 to 63)." },
+    { key: "chroma-u-ac-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -64, max: 63, step: 1, default: 0,
+      help: "Chroma U AC Q-index offset (−64 to 63)." },
+    { key: "chroma-v-dc-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -64, max: 63, step: 1, default: 0,
+      help: "Chroma V DC Q-index offset (−64 to 63)." },
+    { key: "chroma-v-ac-qindex-offset", category: "Rate Control & QP Bias", control: "number", min: -64, max: 63, step: 1, default: 0,
+      help: "Chroma V AC Q-index offset (−64 to 63)." },
     { key: "gop-constraint-rc", category: "Rate Control & QP Bias", control: "toggle", min: 0, max: 1, step: 1, default: 0,
       help: "Constrains rate control to hit the target rate within each GOP individually, rather than averaging across the whole encode." },
     { key: "enable-qm", category: "Quantization Matrices", control: "toggle", min: 0, max: 1, step: 1, default: 1,
@@ -234,6 +252,11 @@ document.addEventListener("DOMContentLoaded", () => {
       help: "Minimum chroma quant-matrix flatness." },
     { key: "chroma-qm-max", category: "Quantization Matrices", control: "select", min: 0, max: 15, step: 1, default: 15,
       help: "Maximum chroma quant-matrix flatness." },
+    { key: "enable-kf-tf", category: "Temporal Filtering", control: "toggle", min: 0, max: 1, step: 1, default: 1,
+      help: "Motion-compensated temporal filtering on key frames. 1 = on (default); 0 = off." },
+    { key: "enable-qmpsnr", category: "Quantization Matrices", control: "select", min: -1, max: 1, step: 1, default: -1,
+      labels: { "-1": "auto", "0": "PSNR/SSE", "1": "QM-PSNR" },
+      help: "QM-weighted transform distortion and coefficient optimization. -1 = auto (on only for tune IQ); 0 = plain PSNR/SSE; 1 = QM-weighted PSNR." },
     { key: "tf-strength", category: "Temporal Filtering", control: "select", min: 0, max: 4, step: 1, default: 1,
       help: "Adjusts temporal-filtering strength on non-keyframes (see kf-tf-strength for keyframes)." },
     { key: "luminance-qp-bias", category: "Rate Control & QP Bias", control: "number", min: 0, max: 100, step: 1, default: 0,
@@ -252,8 +275,9 @@ document.addEventListener("DOMContentLoaded", () => {
       help: "Scene-change detection, used to place keyframes at hard cuts." },
     { key: "lookahead", category: "GOP & Keyframes", control: "number", min: -1, max: 120, step: 1, default: -1,
       help: "Frames of lookahead beyond the mini-GOP, temporal filtering, and rate control. -1 = auto." },
-    { key: "hierarchical-levels", category: "GOP & Keyframes", control: "select", min: 2, max: 5, step: 1, default: 4,
-      help: "Temporal layers beyond the base layer (2 = 3 layers ... 5 = 6 layers). Tritium's own unset default is preset-dependent (5 at presets ≤ M12, else 4) — the value shown here is just this app's own baseline." },
+    { key: "hierarchical-levels", category: "GOP & Keyframes", control: "select", min: -1, max: 5, step: 1, default: -1,
+      labels: { "-1": "auto", "0": "flat" },
+      help: "Temporal layers beyond the base layer (0 = flat, 2 = 3 layers … 5 = 6 layers). -1 = auto (default): the encoder uses 5 at presets ≤ M12, otherwise 4. Pick a number to force it." },
     { key: "pred-struct", category: "GOP & Keyframes", control: "select", min: 1, max: 2, step: 1, default: 2,
       help: "Prediction structure. 1 = low-delay; 2 = random access." },
     { key: "rtc", category: "GOP & Keyframes", control: "toggle", min: 0, max: 1, step: 1, default: 0,
@@ -264,10 +288,12 @@ document.addEventListener("DOMContentLoaded", () => {
       help: "QP offset applied to the startup GOP before picture-QP derivation." },
 
     // --- AV1-specific ---
-    { key: "tile-rows", category: "Tiling, Decode & Screen Content", control: "select", min: 0, max: 6, step: 1, default: 1,
-      help: "Tile rows as a power of two (TileRow = 2^n). Ignored while auto-tiling is on." },
-    { key: "tile-columns", category: "Tiling, Decode & Screen Content", control: "select", min: 0, max: 4, step: 1, default: 1,
-      help: "Tile columns as a power of two (TileCol = 2^n). Ignored while auto-tiling is on." },
+    { key: "tile-rows", category: "Tiling, Decode & Screen Content", control: "select", min: 0, max: 6, step: 1, default: 0,
+      help: "Tile rows as a power of two (TileRow = 2^n); the default changes per resolution. Ignored while auto-tiling is on." },
+    { key: "tile-columns", category: "Tiling, Decode & Screen Content", control: "select", min: 0, max: 4, step: 1, default: 0,
+      help: "Tile columns as a power of two (TileCol = 2^n); the default changes per resolution. Ignored while auto-tiling is on." },
+    { key: "enable-intrabc", category: "Tiling, Decode & Screen Content", control: "toggle", min: 0, max: 1, step: 1, default: 1,
+      help: "Intra Block Copy (screen-content tool). 1 = on, preset-based (default); 0 = off." },
     { key: "lossless", category: "S-Frames & Special Modes", control: "toggle", min: 0, max: 1, step: 1, default: 0,
       help: "Enables lossless coding. Massively increases file size — not meant for a delivery library." },
     { key: "avif", category: "S-Frames & Special Modes", control: "toggle", min: 0, max: 1, step: 1, default: 0,
@@ -284,8 +310,8 @@ document.addEventListener("DOMContentLoaded", () => {
       help: "Q-index threshold for keyframes. Only applies when superres-mode = 3." },
     { key: "sframe-dist", category: "S-Frames & Special Modes", control: "number", min: 0, max: 100000, step: 1, default: 0,
       help: "S-Frame interval in frames. 0 = off." },
-    { key: "sframe-mode", category: "S-Frames & Special Modes", control: "select", min: 1, max: 3, step: 1, default: 2,
-      help: "How an S-Frame is chosen once sframe-dist is set ([1–3]). 2 = the next ALT-REF frame becomes the S-Frame (default)." },
+    { key: "sframe-mode", category: "S-Frames & Special Modes", control: "select", min: 1, max: 4, step: 1, default: 2,
+      help: "How an S-Frame is chosen once sframe-dist is set. 1 = only if the frame is an ALT-REF; 2 = the next ALT-REF becomes the S-Frame (default); 3 = adjust the mini-GOP so one lands at a set position; 4 = same, in decode order." },
     { key: "resize-mode", category: "Super-Resolution & Resize", control: "select", min: 0, max: 4, step: 1, default: 0,
       help: "Reference-frame resize mode. 0 off; 1 fixed scale; 2 random scale; 3 dynamic scale; 4 random access." },
     { key: "resize-denom", category: "Super-Resolution & Resize", control: "select", min: 8, max: 16, step: 1, default: 8,
@@ -433,6 +459,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnBrowserUp = document.getElementById("btnBrowserUp");
   const browserCurrentPath = document.getElementById("browserCurrentPath");
   const browserItemsList = document.getElementById("browserItemsList");
+  const browserSelectionBar = document.getElementById("browserSelectionBar");
+  const browserSelectionCount = document.getElementById("browserSelectionCount");
+  const btnAddBrowserSelection = document.getElementById("btnAddBrowserSelection");
+  const btnClearBrowserSelection = document.getElementById("btnClearBrowserSelection");
   const inspectorPanel = document.getElementById("inspectorPanel");
   const browserChrome = document.getElementById("browserChrome");
   const inspFileName = document.getElementById("inspFileName");
@@ -981,9 +1011,71 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       if (data.settings) appSettings = { ...appSettings, ...data.settings };
       applyAppSettingsToUi();
+      await syncPipelineWithServer();
     } catch (e) {
       console.warn("Could not load settings", e);
     }
+  }
+
+  /**
+   * Pipeline + Test Mode settings live on the server: queued jobs are stamped
+   * when they're saved and every job re-reads them as it starts (a job only
+   * keeps its preset). On load the server's values win; if it has none yet
+   * (first run after this change) seed it from this browser's saved values.
+   */
+  async function syncPipelineWithServer() {
+    const p = appSettings.pipeline;
+    if (!p || typeof p !== "object" || !Object.keys(p).length) {
+      await persistAppSettings({ pipeline: collectPipelineJobSettingsFromUi() });
+      return;
+    }
+    const snap = takePipelineSettingsSnapshot();
+    if (typeof p.ssimu2 === "string") snap.ssimu2 = p.ssimu2;
+    if (typeof p.container === "string") snap.container = p.container;
+    if (typeof p.audio_format === "string") snap.audioFormat = p.audio_format;
+    if (Array.isArray(p.audio_languages)) snap.audioLangs = p.audio_languages;
+    if (typeof p.audio_best_only === "boolean") snap.audioBestOnly = p.audio_best_only;
+    if (typeof p.autocrop === "boolean") snap.autocrop = p.autocrop;
+    if (typeof p.ssimu2_post === "boolean") snap.ssimu2Post = p.ssimu2_post;
+    if (typeof p.extract_subtitles === "boolean") snap.extractSubs = p.extract_subtitles;
+    if (typeof p.subtitle_strip_credits === "boolean") snap.stripSubCredits = p.subtitle_strip_credits;
+    if (typeof p.test_mode_subtitles === "boolean") snap.testModeSubs = p.test_mode_subtitles;
+    if (Array.isArray(p.subtitle_languages)) snap.subLangs = p.subtitle_languages;
+    if (Array.isArray(p.subtitle_kinds)) snap.subKinds = p.subtitle_kinds;
+    restorePipelineSettingsSnapshot(snap);
+
+    // Test Mode toggle + range
+    let tmSaved = null;
+    try { tmSaved = JSON.parse(localStorage.getItem(TEST_MODE_KEY) || "null"); } catch (_) { tmSaved = null; }
+    const tm = {
+      enabled: typeof p.test_mode === "boolean" ? p.test_mode : !!(tmSaved && tmSaved.enabled),
+      from: p.trim_start || (tmSaved && tmSaved.from) || "01:01:10",
+      to: p.trim_end || (tmSaved && tmSaved.to) || "01:01:30"
+    };
+    localStorage.setItem(TEST_MODE_KEY, JSON.stringify(tm));
+    loadTestModeSettings();
+    pipelineSettingsSnapshot = takePipelineSettingsSnapshot();
+  }
+
+  /** Everything the server applies to a job at start (mirrors core/app_settings.PIPELINE_KEYS). */
+  function collectPipelineJobSettingsFromUi() {
+    return {
+      ssimu2: getSsimu2Mode(),
+      container: getContainerFormat(),
+      audio_format: getAudioFormat(),
+      audio_languages: getPipelineAudioLanguages(),
+      audio_best_only: getAudioBestOnly(),
+      autocrop: getAutocropEnabled(),
+      ssimu2_post: getSsimu2PostEnabled(),
+      extract_subtitles: getExtractSubtitlesEnabled(),
+      subtitle_strip_credits: getStripSubCreditsEnabled(),
+      test_mode_subtitles: getTestModeSubtitlesEnabled(),
+      subtitle_languages: getPipelineSubLanguages(),
+      subtitle_kinds: getPipelineSubKinds(),
+      test_mode: !!(testModeEnabled && testModeEnabled.checked),
+      trim_start: readTimeInputs("From"),
+      trim_end: readTimeInputs("To")
+    };
   }
 
   function getHourFormat() {
@@ -1250,6 +1342,8 @@ document.addEventListener("DOMContentLoaded", () => {
     persistSubKindsFromUi();
 
     const naming = collectPipelineAppSettingsFromUi();
+    // Pipeline settings are stamped on queued jobs server-side and re-read as each job starts
+    naming.pipeline = collectPipelineJobSettingsFromUi();
     const ok = await persistAppSettings(naming);
     if (!ok) {
       await customAlert("Could not save settings.");
@@ -1308,6 +1402,64 @@ document.addEventListener("DOMContentLoaded", () => {
       if (pipelineSettingsModal) pipelineSettingsModal.classList.remove("hidden");
     });
   }
+  // Restart: kills the server process and starts a fresh one (core/server_restart.py).
+  // The page reloads once a *different* server instance answers, so new static files load too.
+  const btnRestartServer = document.getElementById("btnRestartServer");
+  async function restartServer() {
+    const busy = !!(queueState.isRunning && queueState.currentJobId);
+    const ok = await customConfirm(
+      "Restart the server?\n\n" +
+      (busy
+        ? "An encode is running — it will be interrupted (press Start afterwards to retry it). "
+        : "") +
+      "The queue and history are kept."
+    );
+    if (!ok) return;
+
+    let oldPid = null;
+    try {
+      oldPid = (await (await fetch("/api/system", { cache: "no-store" })).json()).pid ?? null;
+    } catch (_) { /* no pid → fall back to "any answer after the restart call" */ }
+
+    btnRestartServer.disabled = true;
+    showLoading("Restarting server…");
+    try {
+      const res = await fetch("/api/server/restart", { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || res.statusText || "Restart failed");
+      }
+    } catch (e) {
+      hideLoading();
+      btnRestartServer.disabled = false;
+      await customAlert("Could not restart the server: " + (e.message || e));
+      return;
+    }
+
+    // The old process exits ~0.6s after replying; then the new one has to bind and load the queue
+    await new Promise(r => setTimeout(r, 1500));
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch("/api/system", { cache: "no-store" });
+        if (r.ok) {
+          const j = await r.json();
+          if (oldPid == null || j.pid !== oldPid) {
+            location.reload();
+            return;
+          }
+        }
+      } catch (_) { /* still down */ }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    hideLoading();
+    btnRestartServer.disabled = false;
+    await customAlert(
+      "The server didn't come back within 90 seconds. Check logs\\server.err.log, or start it again with runGUI.bat."
+    );
+  }
+  if (btnRestartServer) btnRestartServer.addEventListener("click", restartServer);
+
   if (btnClosePipelineSettings) btnClosePipelineSettings.addEventListener("click", cancelPipelineSettings);
   if (btnCancelPipelineSettings) btnCancelPipelineSettings.addEventListener("click", cancelPipelineSettings);
   if (btnSavePipelineSettings) btnSavePipelineSettings.addEventListener("click", savePipelineSettings);
@@ -1819,9 +1971,28 @@ document.addEventListener("DOMContentLoaded", () => {
   if (presetTabAdvanced) presetTabAdvanced.addEventListener("click", () => showPresetSection("advanced"));
   if (presetTabPreview) presetTabPreview.addEventListener("click", () => showPresetSection("preview"));
 
+  /** Decimal places a setting is shown and stored with: 1 for fractional steps, else 0. */
+  function svtDecimals(def) {
+    return Number(def.step) < 1 ? 1 : 0;
+  }
+
+  /** Shown value: "1.0" for a fractional-step slider, "35" otherwise. */
+  function svtFormatValue(def, v) {
+    const n = Number(v);
+    return Number.isFinite(n) && svtDecimals(def) ? n.toFixed(svtDecimals(def)) : String(v);
+  }
+
   function normalizeSvtValue(def, raw) {
     const n = Number(raw);
-    return Number.isFinite(n) ? n : def.default;
+    if (!Number.isFinite(n)) return def.default;
+    // Sliders go in 0.1 steps; a value saved with more precision snaps to it
+    return svtDecimals(def) ? Number(n.toFixed(svtDecimals(def))) : n;
+  }
+
+  /** "-1 (auto)" for values the table labels, plain number otherwise. */
+  function svtValueLabel(def, v) {
+    const label = def.labels && def.labels[String(v)];
+    return label ? `${v} (${label})` : String(v);
   }
 
   function isSvtDefault(def, value) {
@@ -1853,7 +2024,7 @@ document.addEventListener("DOMContentLoaded", () => {
     el.value = String(v);
     if (def.control === "slider") {
       const valEl = document.getElementById(`svt_${def.key}_val`);
-      if (valEl) valEl.textContent = String(v);
+      if (valEl) valEl.textContent = svtFormatValue(def, v);
     }
     if (def.control === "number") {
       syncSvtNumberSpinners(el, def);
@@ -1889,7 +2060,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const opts = [];
       for (let v = def.min; v <= def.max + 1e-9; v = Math.round((v + def.step) * 1000) / 1000) {
         const selected = Number(cur) === Number(v) ? "selected" : "";
-        opts.push(`<option value="${v}" ${selected}>${v}</option>`);
+        opts.push(`<option value="${v}" ${selected}>${escapeHtml(svtValueLabel(def, v))}</option>`);
       }
       return `<select class="form-input svt-param-input" id="${escapeHtml(id)}" data-key="${key}">${opts.join("")}</select>`;
     }
@@ -1898,7 +2069,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="svt-slider-wrap">
           <input type="range" class="svt-param-input svt-slider" id="${escapeHtml(id)}" data-key="${key}"
             min="${def.min}" max="${def.max}" step="${def.step}" value="${escapeHtml(String(cur))}">
-          <span class="svt-slider-val" id="${escapeHtml(id)}_val">${escapeHtml(String(cur))}</span>
+          <span class="svt-slider-val" id="${escapeHtml(id)}_val">${escapeHtml(svtFormatValue(def, cur))}</span>
         </div>`;
     }
     return `
@@ -1923,44 +2094,59 @@ document.addEventListener("DOMContentLoaded", () => {
   const RES_HEIGHT_MAP = { source: 0, "1080p": 1080, "1440p": 1440, "2160p": 2160 };
   const presetCommandPreviewBody = document.getElementById("presetCommandPreviewBody");
 
-  function updatePresetCommandPreview() {
-    if (!presetCommandPreviewBody) return;
+  /** Non-default encode settings as the lines shown in the preset Preview and the encode report. */
+  function buildParamsPreviewLines({ crf, preset, resolution, audio51, audioStereo, svt }) {
     const lines = [];
 
-    const crf = Number(pEditCrf?.value ?? 35);
-    if (Number.isFinite(crf) && crf !== 35) lines.push(`--crf ${crf}`);
+    const crfN = Number(crf ?? 35);
+    if (Number.isFinite(crfN) && crfN !== 35) lines.push(`--crf ${crfN}`);
 
-    const presetVal = Number(pEditPreset?.value ?? 3);
+    const presetVal = Number(preset ?? 3);
     if (Number.isFinite(presetVal) && presetVal !== 3) lines.push(`--preset ${presetVal}`);
 
-    const resolution = pEditResolution?.value || "source";
-    if (resolution !== "source") {
-      const h = RES_HEIGHT_MAP[resolution] ?? 0;
+    const res = resolution || "source";
+    if (res !== "source") {
+      const h = RES_HEIGHT_MAP[res] ?? 0;
       lines.push(`--target-height ${h}`);
     }
 
-    const audio51 = pEditAudio51?.value || "320k";
-    if (audio51 !== "320k") lines.push(`audio 5.1 bitrate: ${audio51}`);
+    const a51 = audio51 || "320k";
+    if (a51 !== "320k") lines.push(`audio 5.1 bitrate: ${a51}`);
 
-    const audioStereo = pEditAudioStereo?.value || "160k";
-    if (audioStereo !== "160k") lines.push(`audio stereo bitrate: ${audioStereo}`);
+    const aStereo = audioStereo || "160k";
+    if (aStereo !== "160k") lines.push(`audio stereo bitrate: ${aStereo}`);
 
-    const svt = collectSvtOverrides();
-    const svtOpts = Object.keys(svt)
+    const svtOpts = Object.keys(svt || {})
       .sort()
       .map(k => `${k}=${svt[k]}`);
     if (svtOpts.length) {
       lines.push(`encoder options (HandBrake -x):`);
       svtOpts.forEach(f => lines.push(`  ${f}`));
     }
+    return lines;
+  }
 
+  function setParamsPreviewBody(el, lines, emptyText = "All settings at defaults.") {
+    if (!el) return;
     if (!lines.length) {
-      presetCommandPreviewBody.textContent = "All settings at defaults.";
-      presetCommandPreviewBody.classList.add("is-empty");
+      el.textContent = emptyText;
+      el.classList.add("is-empty");
     } else {
-      presetCommandPreviewBody.textContent = lines.join("\n");
-      presetCommandPreviewBody.classList.remove("is-empty");
+      el.textContent = lines.join("\n");
+      el.classList.remove("is-empty");
     }
+  }
+
+  function updatePresetCommandPreview() {
+    if (!presetCommandPreviewBody) return;
+    setParamsPreviewBody(presetCommandPreviewBody, buildParamsPreviewLines({
+      crf: pEditCrf?.value,
+      preset: pEditPreset?.value,
+      resolution: pEditResolution?.value,
+      audio51: pEditAudio51?.value,
+      audioStereo: pEditAudioStereo?.value,
+      svt: collectSvtOverrides(),
+    }));
   }
 
   function renderAdvancedSvtFields(overrides) {
@@ -1984,7 +2170,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const atDefault = isSvtDefault(def, cur);
         const defaultHint = def.control === "toggle"
           ? (Number(def.default) === 1 ? "On" : "Off")
-          : String(def.default);
+          : svtValueLabel(def, def.default);
         return `
         <div class="setting-row ${atDefault ? "is-default" : ""}" data-svt-key="${escapeHtml(def.key)}">
           <label class="setting-label" for="svt_${escapeHtml(def.key)}">${labelWithHelp(def.key, `${def.help}\nDefault: ${defaultHint}`)}</label>
@@ -2019,7 +2205,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const onChange = () => {
         if (def.control === "slider") {
           const valEl = document.getElementById(`svt_${def.key}_val`);
-          if (valEl) valEl.textContent = input.value;
+          if (valEl) valEl.textContent = svtFormatValue(def, input.value);
         }
         if (def.control === "number") {
           syncSvtNumberSpinners(input, def);
@@ -2133,7 +2319,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const sp = svtParams && typeof svtParams === "object" ? svtParams : {};
     if (pEditTune) {
       const t = sp.tune !== undefined ? Number(sp.tune) : 1;
-      pEditTune.value = String([0, 1, 2, 3, 4, 5].includes(t) ? t : 1);
+      pEditTune.value = String([0, 1, 2, 4, 5, 6].includes(t) ? t : 1);
     }
   }
 
@@ -2190,7 +2376,7 @@ document.addEventListener("DOMContentLoaded", () => {
       name: name,
       description: (existing && existing.description) ? existing.description : "",
       crf: Math.round(Math.min(70, Math.max(1, Number(pEditCrf.value) || 35))),
-      preset: Math.round(Math.min(13, Math.max(-3, Number(pEditPreset.value) || 4))),
+      preset: Math.round(Math.min(10, Math.max(-3, Number(pEditPreset.value) || 4))),
       resolution_target: pEditResolution.value || "source",
       audio_bitrate_51: pEditAudio51.value,
       audio_bitrate_stereo: pEditAudioStereo.value,
@@ -2842,35 +3028,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function postAction(action) {
     try {
+      // No Test Mode prompt: pipeline / Test Mode settings live on the server and
+      // every job re-reads them as it starts, so queued jobs can't disagree with them.
       const body = { action };
-      if (action === "start") {
-        const tm = getTestModeJobFields();
-        const queued = (queueState.jobs || []).filter((j) => j.status === "QUEUED");
-        // The Test Mode toggle already stamps every queued job the moment it's
-        // flipped (saveTestModeSettings -> syncTestModeToQueuedJobs), so in the
-        // normal single-session flow queued jobs are always in sync here. Only
-        // warn when they're genuinely NOT — e.g. a job was queued from another
-        // tab/session after the last sync, or a job's Test Mode was edited
-        // individually and now disagrees with the global toggle.
-        const outOfSync = queued.some((j) => {
-          const jobTestMode = !!j.config?.test_mode;
-          if (jobTestMode !== tm.test_mode) return true;
-          if (tm.test_mode) {
-            return j.config?.trim_start !== tm.trim_start || j.config?.trim_end !== tm.trim_end;
-          }
-          return false;
-        });
-        if (outOfSync && queued.length >= 1) {
-          const ok = await customConfirm(
-            `Test Mode is ${tm.test_mode ? "ON" : "OFF"}, but ${queued.length} queued job(s) don't match it ` +
-              `(added or edited since the toggle was last set).\n\n` +
-              `Start will use each job's OWN Test Mode setting, not force the current toggle onto them.\n\n` +
-              `Use the Test Mode toggle (or Save in Test Mode settings) if you want to stamp all queued jobs first.\n\n` +
-              `Continue starting the queue?`
-          );
-          if (!ok) return;
-        }
-      }
       await fetch("/api/queue/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2961,38 +3121,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   })();
 
-  // --- Native Windows File Dialog & In-App Browser ---
-  // Prevent browser default window drag/drop behavior (opening media in browser)
-  window.addEventListener("dragover", (e) => e.preventDefault(), false);
-  window.addEventListener("drop", (e) => e.preventDefault(), false);
+  // --- In-App File Browser ---
+  // Files live on the machine running the server, not the browser making the
+  // request — a native OS file dialog or drag-and-drop would target the wrong
+  // filesystem for anyone connecting remotely (see README "Network access"),
+  // so adding files always goes through /api/browse instead.
+  dropZone.addEventListener("click", () => openBrowser(localStorage.getItem(LAST_BROWSE_PATH_KEY) || "drives"));
 
-  dropZone.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    dropZone.classList.add("dragover");
+  btnCloseModal.addEventListener("click", () => {
+    browseModal.classList.add("hidden");
+    clearBrowserSelection();
   });
-  dropZone.addEventListener("dragleave", (e) => {
-    e.preventDefault();
-    dropZone.classList.remove("dragover");
-  });
-  dropZone.addEventListener("drop", async (e) => {
-    e.preventDefault();
-    dropZone.classList.remove("dragover");
-    openNativeFilePicker();
-  });
-  dropZone.addEventListener("click", () => openNativeFilePicker());
-
-  const btnOpenNativeFromModal = document.getElementById("btnOpenNativeFromModal");
-  if (btnOpenNativeFromModal) btnOpenNativeFromModal.addEventListener("click", () => openNativeFilePicker());
-  btnCloseModal.addEventListener("click", () => browseModal.classList.add("hidden"));
   btnBrowserUp.addEventListener("click", () => {
-    if (currentBrowserPath) {
-      const parts = currentBrowserPath.split(/[\\/]/).filter(Boolean);
-      parts.pop();
-      const parent = parts.join("\\");
-      openBrowser(parent || "drives");
-    } else {
-      openBrowser("drives");
-    }
+    // The server knows the real parent (a drive root's parent is the drives list);
+    // building it here turned "E:\Local" into the drive-relative "E:" → the app folder.
+    openBrowser(currentBrowserParent || "drives");
   });
 
   const loadingModal = document.getElementById("loadingModal");
@@ -3014,50 +3157,44 @@ document.addEventListener("DOMContentLoaded", () => {
     if (loadingMessage && message) loadingMessage.textContent = message;
   }
 
-  async function openNativeFilePicker() {
-    dropZone.style.pointerEvents = "none";
-    // Modal up before the OS dialog so when the dialog closes the UI is already
-    // busy — pick_files can still take a moment (tk teardown / path resolve).
-    showLoading("Select video files…");
-    let data = null;
-    try {
-      const res = await fetch("/api/dialog/pick_files", { method: "POST" });
-      data = await res.json();
-    } catch (e) {
-      console.error("Picker error, falling back to browser modal:", e);
-      hideLoading();
-      dropZone.style.pointerEvents = "";
-      openBrowser("drives");
-      return;
-    }
-    dropZone.style.pointerEvents = "";
+  // Paths checked in the browser's file list — persists across folder
+  // navigation within one modal session (cleared on close / after adding).
+  let browserSelectedPaths = new Set();
 
-    if (!(data && data.status === "ok" && data.paths && data.paths.length > 0)) {
-      hideLoading();
-      return;
-    }
+  function renderBrowserSelectionBar() {
+    const n = browserSelectedPaths.size;
+    if (browserSelectionBar) browserSelectionBar.classList.toggle("hidden", n === 0);
+    if (browserSelectionCount) browserSelectionCount.textContent = `${n} selected`;
+  }
 
-    if (data.paths.length === 1) {
-      try {
-        await inspectFile(data.paths[0], { alreadyLoading: true });
-        browseModal.classList.remove("hidden");
-      } finally {
-        hideLoading();
-      }
-      return;
-    }
+  function toggleBrowserSelection(path, checked) {
+    if (checked) browserSelectedPaths.add(path);
+    else browserSelectedPaths.delete(path);
+    renderBrowserSelectionBar();
+  }
 
+  function clearBrowserSelection() {
+    if (!browserSelectedPaths.size) return;
+    browserSelectedPaths = new Set();
+    renderBrowserSelectionBar();
+    document.querySelectorAll(".b-item-checkbox").forEach((cb) => { cb.checked = false; });
+  }
+
+  if (btnClearBrowserSelection) btnClearBrowserSelection.addEventListener("click", clearBrowserSelection);
+
+  /** Add several paths to the queue with the currently active preset + Test Mode. */
+  async function addFilesToQueue(paths) {
     const activeP = allPresets.find(p => p.id === selectedPreset) || {};
     const cfg = buildConfigFromPreset(activeP, getTestModeJobFields());
-    const n = data.paths.length;
-    setLoadingMessage(`Adding ${n} file${n === 1 ? "" : "s"}…`);
+    const n = paths.length;
+    showLoading(`Adding ${n} file${n === 1 ? "" : "s"}…`);
     let result = null;
     let addErr = null;
     try {
       result = await fetchJson("/api/queue/batch_add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: data.paths, config: cfg })
+        body: JSON.stringify({ paths, config: cfg })
       });
     } catch (e) {
       addErr = e;
@@ -3069,7 +3206,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     // batch_add reports per-file failures in its body, not the status code —
-    // without this a partially failed multi-select looks like it fully worked.
+    // without this a partially failed selection looks like it fully worked.
     const failed = (result && result.errors) || [];
     if (failed.length) {
       const lines = failed
@@ -3083,6 +3220,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  if (btnAddBrowserSelection) {
+    btnAddBrowserSelection.addEventListener("click", async () => {
+      const paths = [...browserSelectedPaths];
+      if (!paths.length) return;
+      clearBrowserSelection();
+      browseModal.classList.add("hidden");
+      await addFilesToQueue(paths);
+    });
+  }
+
   async function openBrowser(path) {
     browseModal.classList.remove("hidden");
     inspectorPanel.classList.add("hidden");
@@ -3091,14 +3238,26 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch(`/api/browse?path=${encodeURIComponent(path || "drives")}`);
       const data = await res.json();
       currentBrowserPath = data.current_path;
+      currentBrowserParent = data.parent_path || null;
       browserCurrentPath.textContent = data.current_path;
+
+      localStorage.setItem(LAST_BROWSE_PATH_KEY, data.current_path || "drives");
 
       browserItemsList.innerHTML = data.items.map(item => `
         <div class="b-item" data-path="${escapeHtml(item.path)}" data-isdir="${item.is_dir}">
+          ${item.is_dir
+            ? `<span class="b-item-spacer" aria-hidden="true"></span>`
+            : `<input type="checkbox" class="b-item-checkbox" data-path="${escapeHtml(item.path)}"
+                 ${browserSelectedPaths.has(item.path) ? "checked" : ""} aria-label="Select ${escapeHtml(item.name)}">`}
           <span>${item.is_dir ? "📁" : "🎬"}</span>
           <span>${escapeHtml(item.name)}</span>
         </div>
       `).join("");
+
+      document.querySelectorAll(".b-item-checkbox").forEach(cb => {
+        cb.addEventListener("click", (e) => e.stopPropagation());
+        cb.addEventListener("change", () => toggleBrowserSelection(cb.getAttribute("data-path"), cb.checked));
+      });
 
       document.querySelectorAll(".b-item").forEach(el => {
         el.addEventListener("click", async () => {
@@ -3553,6 +3712,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const logModalTitle = document.getElementById("logModalTitle");
   const logReportSummary = document.getElementById("logReportSummary");
   const logModalContent = document.getElementById("logModalContent");
+  const logModalTerminal = document.getElementById("logModalTerminal");
+  const logModalParams = document.getElementById("logModalParams");
+  const logModalParamsBody = document.getElementById("logModalParamsBody");
+  const logTabLog = document.getElementById("logTabLog");
+  const logTabParams = document.getElementById("logTabParams");
 
   let historyItems = [];
 
@@ -4191,6 +4355,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || res.statusText || "Reset failed");
       }
+      // The history record stays; only a copy is queued
       fetchHistory();
     } catch (e) {
       await customAlert("Error resetting encode to queue: " + e);
@@ -4332,8 +4497,37 @@ document.addEventListener("DOMContentLoaded", () => {
       ? job.logs
       : ["No log entries recorded."];
     logModalContent.innerHTML = logs.map(l => `<div>${escapeHtml(l)}</div>`).join("");
+
+    // Params tab: same non-defaults-only listing as the preset editor's Preview tab
+    const cfg = job.config || {};
+    setParamsPreviewBody(
+      logModalParamsBody,
+      Object.keys(cfg).length
+        ? buildParamsPreviewLines({
+            crf: cfg.crf,
+            preset: cfg.preset,
+            resolution: cfg.resolution_target,
+            audio51: cfg.audio_bitrate_51,
+            audioStereo: cfg.audio_bitrate_stereo,
+            svt: cfg.svt_params,
+          })
+        : [],
+      Object.keys(cfg).length ? "All settings at defaults." : "No parameters recorded for this encode."
+    );
+    showLogReportTab("log");
     logModalContent.scrollTop = logModalContent.scrollHeight;
   }
+
+  function showLogReportTab(which) {
+    const isLog = which !== "params";
+    logModalTerminal.classList.toggle("hidden", !isLog);
+    logModalParams.classList.toggle("hidden", isLog);
+    logTabLog.classList.toggle("active", isLog);
+    logTabParams.classList.toggle("active", !isLog);
+    if (isLog) logModalContent.scrollTop = logModalContent.scrollHeight;
+  }
+  logTabLog.addEventListener("click", () => showLogReportTab("log"));
+  logTabParams.addEventListener("click", () => showLogReportTab("params"));
 
   btnCloseLogModal.addEventListener("click", () => logReportModal.classList.add("hidden"));
 
