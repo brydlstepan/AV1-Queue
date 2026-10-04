@@ -208,32 +208,15 @@ def setup_python_environment() -> None:
     print("[*] Installing required Python packages...")
     requirements = BASE_DIR / "requirements.txt"
     try:
+        # requirements.txt is the single package list (a second copy here drifted)
+        if not requirements.is_file():
+            note_error(f"requirements.txt missing ({requirements}) — restore it from the repository.")
+            return
         subprocess.run([str(python_exe), "-m", "pip", "install", "--upgrade", "pip"], check=True)
-        if requirements.is_file():
-            subprocess.run(
-                [str(python_exe), "-m", "pip", "install", "-r", str(requirements)],
-                check=True,
-            )
-        else:
-            note_warning("requirements.txt missing — installing a minimal fallback package set.")
-            packages = [
-                "wheel",
-                "setuptools",
-                "vapoursynth",
-                "vstools",
-                "vsjetpack",
-                "rich",
-                "fastapi",
-                "uvicorn[standard]",
-                "websockets",
-                "psutil",
-                "py7zr",
-                "langcodes",
-                "guessit",
-                "charset-normalizer",
-                "watchdog",
-            ]
-            subprocess.run([str(python_exe), "-m", "pip", "install"] + packages, check=True)
+        subprocess.run(
+            [str(python_exe), "-m", "pip", "install", "-r", str(requirements)],
+            check=True,
+        )
     except Exception as e:
         note_error(f"pip install failed: {e}")
 

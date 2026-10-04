@@ -264,7 +264,7 @@ async def get_presets():
 @app.post("/api/presets/save")
 async def save_preset(preset: PresetModel):
     presets = load_presets()
-    incoming = preset.model_dump() if hasattr(preset, "model_dump") else preset.dict()
+    incoming = preset.model_dump()
     # Fields that affect queued job snapshots (must match frontend PRESET_SYNC_KEYS)
     sync_keys = (
         "name", "crf", "preset", "resolution_target",
@@ -274,9 +274,7 @@ async def save_preset(preset: PresetModel):
     # payload doesn't always include every field, and blindly overwriting
     # with model defaults would silently wipe values already stored on the
     # preset for any field it omits.
-    fields_set = getattr(preset, "model_fields_set", None)
-    if fields_set is None:
-        fields_set = getattr(preset, "__fields_set__", set())  # pydantic v1
+    fields_set = preset.model_fields_set
     allow_builtin = bool(load_settings().get("allow_builtin_preset_edits"))
 
     existing = next((p for p in presets if p.get("id") == preset.id), None)
@@ -689,7 +687,7 @@ def _public_settings(data: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.post("/api/settings")
 async def update_settings(req: SettingsUpdateRequest):
-    raw = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    raw = req.model_dump()
     clear_secrets = raw.pop("clear_secrets", None) or []
     updates = {k: v for k, v in raw.items() if v is not None}
     # The UI never has a saved secret to send back, so a blank one means

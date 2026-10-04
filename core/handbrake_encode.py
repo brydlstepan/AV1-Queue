@@ -21,8 +21,9 @@ Mapping from the job config:
   - DoVi P7 → 8.1 conversion, RPU crop correction and HDR10+ passthrough are
     HandBrake's (--hdr-dynamic-metadata); the static HDR10 flags come from its
     own scan of the source
-  - chapters and subtitles are stripped (--no-markers, -s none); audio tracks
-    are left unnamed
+  - chapters and subtitles are stripped (--no-markers, -s none), as is the
+    source's container metadata such as its title (--no-metadata); audio
+    tracks are left unnamed
 """
 
 from __future__ import annotations
@@ -151,6 +152,10 @@ def build_handbrake_command(
         "-f", "av_webm" if webm else "av_mp4",
         "--no-markers",
         "-s", "none",
+        # Drop the source's container metadata — its title is usually the scene
+        # release name, which players can show instead of the library name.
+        # HDR / DoVi signalling and track languages are unaffected.
+        "--no-metadata",
         "--disable-hw-decoding",
         "-e", "svt_av1_10bit",
         "--encoder-preset", str(int(preset)),

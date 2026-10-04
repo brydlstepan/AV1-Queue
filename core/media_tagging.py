@@ -68,8 +68,9 @@ def _normalize_stem(filename: str) -> str:
             break
         name = name[:-1]
     stem = Path(name).stem
-    stem = re.sub(r"_av1_boost$", "", stem, flags=re.I)
+    # Test suffix first — stripping _av1_boost first would leave "_test_…" behind
     stem = re.sub(r"_test_\d+-\d+_av1_boost$", "", stem, flags=re.I)
+    stem = re.sub(r"_av1_boost$", "", stem, flags=re.I)
     stem = stem.strip(" .")
     # Scene group tag: …Atmos-TNT. Only strip it on names that actually look like
     # a scene release — otherwise the pattern eats the last word of a hyphenated
@@ -671,8 +672,18 @@ def _tmdb_get(path: str, api_key: str, extra_params: Optional[Dict[str, str]] = 
         req = urllib.request.Request(url, headers=auth["headers"])
         with urllib.request.urlopen(req, timeout=12) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
-        return None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {}  # a real answer: nothing there
+        raise _TmdbUnavailable(f"HTTP {e.code}") from e
+    except Exception as e:
+        # Connection reset mid-read, timeout, bad JSON, … — a lookup that
+        # couldn't run, not "no match". Must never abort the job add.
+        raise _TmdbUnavailable(str(e)) from e
+
+
+class _TmdbUnavailable(Exception):
+    """TMDB couldn't be reached / answered garbage — distinct from no match."""
 
 
 def _tmdb_search(api_key: str, title: str, year: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -708,7 +719,12 @@ def tmdb_find_movie(title: str, year: Optional[int], api_key: str) -> Optional[D
         if cache_key in _tmdb_cache:
             return _tmdb_cache[cache_key]
 
-    result = _tmdb_find_movie_uncached(title, year, key)
+    try:
+        result = _tmdb_find_movie_uncached(title, year, key)
+    except _TmdbUnavailable as e:
+        # Not cached: a brief outage mustn't stick as "no match" until restart
+        print(f"[tmdb] Lookup for '{title}' failed: {e}")
+        return None
 
     with _tmdb_cache_lock:
         _tmdb_cache[cache_key] = result
@@ -794,8 +810,14 @@ def build_media_tag(
             parsed["imdb_id"] = nfo_id
             source = "nfo"
 
+    # Before TMDB: the lookup is a movie search, so an episode would be matched
+    # against movies ("Breaking Bad S01E02") and pick up a wrong IMDb id that
+    # the subtitle search then uses.
+    ep = detect_episode_info(input_path.name)
+    kind = "episode" if ep else "movie"
+
     tmdb: Optional[Dict[str, Any]] = None
-    if settings.get("tmdb_lookup", True) and not parsed.get("imdb_id"):
+    if settings.get("tmdb_lookup", True) and not parsed.get("imdb_id") and kind == "movie":
         api_key = str(settings.get("tmdb_api_key") or "").strip()
         if not api_key:
             lookup_note = "Add a TMDB API key in Settings > Naming to resolve IMDb IDs"
@@ -827,8 +849,6 @@ def build_media_tag(
     quality = quality_tag(res)
     ext = "webm" if str(container).lower() == "webm" else "mp4"
     video = video or {}
-    ep = detect_episode_info(input_path.name)
-    kind = "episode" if ep else "movie"
     if ep and ep.get("show") and parsed.get("title") in ("Unknown", "", None):
         parsed["title"] = ep["show"]
         parsed["title_dots"] = title_to_dots(ep["show"])

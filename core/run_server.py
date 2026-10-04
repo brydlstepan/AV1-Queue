@@ -68,9 +68,8 @@ def _port() -> int:
 def _wait_for_previous_server() -> bool:
     """
     A restart (core/server_restart.py) starts this process before the old one has
-    exited and passes its PID. Wait for it to be gone first: on Windows
-    SO_REUSEADDR lets a second socket bind a port that is still listening, so
-    binding early would split connections between the two servers.
+    exited and passes its PID. Wait for it to be gone first, so the bind
+    doesn't have to ride out the old listener (_bind_all retries meanwhile).
     Returns True when this launch is a restart.
     """
     raw = os.environ.pop("AV1QUEUE_WAIT_PID", "").strip()
@@ -95,7 +94,12 @@ def _bind_all(hosts: list, port: int, attempts: int) -> list:
             for host in hosts:
                 family = socket.AF_INET6 if ":" in host else socket.AF_INET
                 sock = socket.socket(family, socket.SOCK_STREAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                # Not on Windows: there SO_REUSEADDR lets a second server bind a
+                # port that is still listening (connections split between them,
+                # and its startup recovery kills the first one's encode). Without
+                # it the bind is refused, and a restart still rebinds fine.
+                if os.name != "nt":
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind((host, port))
                 sock.listen(2048)
                 sockets.append(sock)
