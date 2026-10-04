@@ -138,7 +138,6 @@ queue_mgr = QueueManager()
 
 def broadcast_event(event_type: str, data: Dict[str, Any]):
     """Thread-safe WebSocket broadcaster."""
-    global loop
     if not loop or not active_websockets:
         return
     message = json.dumps({"event": event_type, "data": data})
@@ -250,6 +249,8 @@ class SettingsUpdateRequest(BaseModel):
     watch_folder_default_preset: Optional[str] = None
     hour_format: Optional[str] = None
     allow_builtin_preset_edits: Optional[bool] = None
+    # Secret keys (SECRET_SETTINGS) to remove — a blank secret means "keep"
+    clear_secrets: Optional[List[str]] = None
     # Pipeline + Test Mode settings (merged, validated in core/app_settings.py).
     # Queued jobs are re-stamped on save and every job re-reads them at start.
     pipeline: Optional[Dict[str, Any]] = None
@@ -263,7 +264,7 @@ async def get_presets():
 @app.post("/api/presets/save")
 async def save_preset(preset: PresetModel):
     presets = load_presets()
-    incoming = preset.dict() if hasattr(preset, "dict") else preset.model_dump()
+    incoming = preset.model_dump() if hasattr(preset, "model_dump") else preset.dict()
     # Fields that affect queued job snapshots (must match frontend PRESET_SYNC_KEYS)
     sync_keys = (
         "name", "crf", "preset", "resolution_target",
@@ -273,7 +274,9 @@ async def save_preset(preset: PresetModel):
     # payload doesn't always include every field, and blindly overwriting
     # with model defaults would silently wipe values already stored on the
     # preset for any field it omits.
-    fields_set = preset.__fields_set__ if hasattr(preset, "__fields_set__") else getattr(preset, "model_fields_set", set())
+    fields_set = getattr(preset, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(preset, "__fields_set__", set())  # pydantic v1
     allow_builtin = bool(load_settings().get("allow_builtin_preset_edits"))
 
     existing = next((p for p in presets if p.get("id") == preset.id), None)
@@ -410,7 +413,7 @@ async def requeue_history_item(req: ActionRequest):
     if not input_path or not Path(input_path).is_file():
         raise HTTPException(status_code=400, detail="Original source file no longer exists")
     try:
-        job = queue_mgr.add_job(input_path, config=item.get("config"))
+        job = await asyncio.to_thread(queue_mgr.add_job, input_path, config=item.get("config"))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     # A copy goes back to the queue; the history record stays as the record of the finished encode.
@@ -469,7 +472,8 @@ async def get_queue():
 @app.post("/api/queue/add")
 async def add_job(req: AddJobRequest):
     try:
-        job = queue_mgr.add_job(req.input_path, req.output_path, req.config)
+        # Probe (+ TMDB lookup) can take seconds — keep it off the event loop
+        job = await asyncio.to_thread(queue_mgr.add_job, req.input_path, req.output_path, req.config)
         return {"status": "ok", "job": job}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -481,7 +485,7 @@ async def batch_add_jobs(req: BatchAddRequest):
     errors = []
     for p in req.paths:
         try:
-            job = queue_mgr.add_job(p, config=req.config)
+            job = await asyncio.to_thread(queue_mgr.add_job, p, config=req.config)
             added.append(job)
         except Exception as e:
             errors.append({"path": p, "error": str(e)})
@@ -540,7 +544,7 @@ async def queue_action(req: ActionRequest):
     if act == "start":
         # Off the event loop: start may wait a few seconds for a stopping worker
         try:
-            await asyncio.get_running_loop().run_in_executor(None, queue_mgr.start_queue)
+            await asyncio.to_thread(queue_mgr.start_queue)
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e))
     elif act == "pause":
@@ -576,19 +580,23 @@ async def probe_file(
     p = _resolved_user_path(path)
     if not p.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    raw = queue_mgr.pipeline.hdr_processor.probe_video_streams(p)
-    media = queue_mgr.pipeline.probe_media(p, probe=raw)
-    hdr = queue_mgr.pipeline.hdr_processor.analyze_hdr_and_dovi(p, probe=raw)
-    fmt = normalize_audio_format(audio_format)
-    prioritized_audio = queue_mgr.pipeline.select_and_prioritize_audio(
-        media["audio_tracks"],
-        audio_format=fmt,
-    )
-    return {
-        "media": media,
-        "hdr": hdr,
-        "prioritized_audio": prioritized_audio
-    }
+
+    def _probe():
+        # ffprobe + frame sampling: seconds on a large / network file
+        raw = queue_mgr.pipeline.hdr_processor.probe_video_streams(p)
+        media = queue_mgr.pipeline.probe_media(p, probe=raw)
+        hdr = queue_mgr.pipeline.hdr_processor.analyze_hdr_and_dovi(p, probe=raw)
+        prioritized_audio = queue_mgr.pipeline.select_and_prioritize_audio(
+            media["audio_tracks"],
+            audio_format=normalize_audio_format(audio_format),
+        )
+        return {
+            "media": media,
+            "hdr": hdr,
+            "prioritized_audio": prioritized_audio
+        }
+
+    return await asyncio.to_thread(_probe)
 
 
 _GPU_POLL_SECONDS = 6.0
@@ -663,15 +671,35 @@ async def restart_server():
 
 @app.get("/api/settings")
 async def get_settings():
-    data = load_settings()
-    # Never echo password in clear if empty; still return field for form binding
-    return {"status": "ok", "settings": data}
+    return {"status": "ok", "settings": _public_settings(load_settings())}
+
+
+# Never sent to the browser: the UI only learns whether each one is saved
+# (settings.secrets_set) and can replace or clear it, not read it back.
+SECRET_SETTINGS = ("tmdb_api_key", "opensubtitles_api_key", "opensubtitles_password")
+
+
+def _public_settings(data: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(data)
+    out["secrets_set"] = {k: bool(str(out.get(k) or "").strip()) for k in SECRET_SETTINGS}
+    for k in SECRET_SETTINGS:
+        out[k] = ""
+    return out
 
 
 @app.post("/api/settings")
 async def update_settings(req: SettingsUpdateRequest):
     raw = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    clear_secrets = raw.pop("clear_secrets", None) or []
     updates = {k: v for k, v in raw.items() if v is not None}
+    # The UI never has a saved secret to send back, so a blank one means
+    # "unchanged"; removing one is the explicit clear_secrets list.
+    for k in SECRET_SETTINGS:
+        if k in updates and not str(updates[k]).strip():
+            del updates[k]
+    for k in clear_secrets:
+        if k in SECRET_SETTINGS:
+            updates[k] = ""
     if "hour_format" in updates:
         fmt = str(updates["hour_format"]).strip()
         if fmt not in ("12", "24"):
@@ -685,7 +713,7 @@ async def update_settings(req: SettingsUpdateRequest):
         _restart_watch_service()
     if "pipeline" in updates:
         queue_mgr.apply_pipeline_settings_to_queued()
-    return {"status": "ok", "settings": data}
+    return {"status": "ok", "settings": _public_settings(data)}
 
 
 def get_available_drives():

@@ -278,10 +278,10 @@ def main() -> int:
 
     disagree = [r for r in rows if r["detector_disagree"]]
     if disagree:
-        print(f"\n  [!] DETECTOR GAP")
+        print("\n  [!] DETECTOR GAP")
         print(f"      {len(disagree)} file(s) carry HDR10+ in frame SEI that the")
-        print(f"      pipeline's stream-level detector does NOT see. These would")
-        print(f"      silently lose HDR10+ on encode today:")
+        print("      pipeline's stream-level detector does NOT see. These would")
+        print("      silently lose HDR10+ on encode today:")
         for r in disagree[:10]:
             print(f"        - {r['name']}")
         if len(disagree) > 10:

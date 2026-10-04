@@ -991,11 +991,10 @@ document.addEventListener("DOMContentLoaded", () => {
     ssimu2_target: 80,
     tmdb_lookup: true,
     preserve_dovi_rpu: true,
-    tmdb_api_key: "",
     subtitle_search: false,
-    opensubtitles_api_key: "",
     opensubtitles_username: "",
-    opensubtitles_password: "",
+    // Secret values never reach the browser; only whether each one is saved
+    secrets_set: { tmdb_api_key: false, opensubtitles_api_key: false, opensubtitles_password: false },
     watch_folder_enabled: false,
     watch_folder_path: "",
     watch_folder_output_path: "",
@@ -1003,6 +1002,7 @@ document.addEventListener("DOMContentLoaded", () => {
     hour_format: "24",
     allow_builtin_preset_edits: false
   };
+  let pendingSecretClears = new Set();  // secret keys the user clicked Clear on (sent on Save)
   let pipelineSettingsSnapshot = null;
 
   async function fetchAppSettings() {
@@ -1146,14 +1146,10 @@ document.addEventListener("DOMContentLoaded", () => {
       epTpl.value = stripExtToken(appSettings.name_template_episode || DEFAULT_NAME_TEMPLATE_EPISODE);
       syncPipelineFieldRow(epTpl);
     }
-    const tmdbKey = document.getElementById("settingsTmdbApiKey");
-    const osKey = document.getElementById("settingsOsApiKey");
     const osUser = document.getElementById("settingsOsUser");
-    const osPass = document.getElementById("settingsOsPass");
-    if (tmdbKey) tmdbKey.value = appSettings.tmdb_api_key || "";
-    if (osKey) osKey.value = appSettings.opensubtitles_api_key || "";
     if (osUser) osUser.value = appSettings.opensubtitles_username || "";
-    if (osPass) osPass.value = appSettings.opensubtitles_password || "";
+    pendingSecretClears = new Set();
+    document.querySelectorAll(".secret-input").forEach(syncSecretInput);
 
     const watchEnabled = document.getElementById("globalWatchFolderEnabled");
     if (watchEnabled) {
@@ -1170,6 +1166,44 @@ document.addEventListener("DOMContentLoaded", () => {
         sortPresetsByName(allPresets).map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
       watchPreset.value = appSettings.watch_folder_default_preset || "";
     }
+  }
+
+  // Secrets (API keys, password) never come back from the server — it sends
+  // "" plus secrets_set flags. A blank field on Save keeps the stored value;
+  // Clear queues an explicit removal (clear_secrets). pendingSecretClears is
+  // declared next to appSettings.
+
+  function syncSecretInput(input) {
+    const key = input.getAttribute("data-secret-key");
+    if (!input.dataset.placeholder) input.dataset.placeholder = input.placeholder;
+    const saved = !!(appSettings.secrets_set && appSettings.secrets_set[key]) && !pendingSecretClears.has(key);
+    input.value = "";
+    input.placeholder = pendingSecretClears.has(key)
+      ? "Will be removed on Save"
+      : saved ? "••••••  Saved — type to replace" : input.dataset.placeholder;
+    const clearBtn = document.querySelector(`.btn-clear-secret[data-target="${input.id}"]`);
+    if (clearBtn) clearBtn.classList.toggle("hidden", !saved);
+  }
+
+  document.querySelectorAll(".btn-clear-secret").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const input = document.getElementById(btn.getAttribute("data-target"));
+      if (!input) return;
+      pendingSecretClears.add(input.getAttribute("data-secret-key"));
+      syncSecretInput(input);
+    });
+  });
+
+  function collectSecretUpdates() {
+    const out = { clear_secrets: [] };
+    document.querySelectorAll(".secret-input").forEach(input => {
+      const key = input.getAttribute("data-secret-key");
+      const typed = input.value.trim();
+      if (typed) out[key] = typed;                   // new value replaces
+      else if (pendingSecretClears.has(key)) out.clear_secrets.push(key);
+      // blank and not cleared: omitted → server keeps the stored value
+    });
+    return out;
   }
 
   async function persistAppSettings(partial) {
@@ -1308,10 +1342,8 @@ document.addEventListener("DOMContentLoaded", () => {
       tmdb_lookup: toggleOn("globalTmdbLookup"),
       preserve_dovi_rpu: toggleOn("globalPreserveDoviRpu"),
       subtitle_search: toggleOn("globalSubtitleSearch"),
-      tmdb_api_key: document.getElementById("settingsTmdbApiKey")?.value || "",
-      opensubtitles_api_key: document.getElementById("settingsOsApiKey")?.value || "",
+      ...collectSecretUpdates(),
       opensubtitles_username: document.getElementById("settingsOsUser")?.value || "",
-      opensubtitles_password: document.getElementById("settingsOsPass")?.value || "",
       watch_folder_enabled: toggleOn("globalWatchFolderEnabled"),
       watch_folder_path: (document.getElementById("settingsWatchFolderPath")?.value || "").trim(),
       watch_folder_output_path: (document.getElementById("settingsWatchFolderOutputPath")?.value || "").trim(),

@@ -887,9 +887,15 @@ Default: PSNR</span>
                   </label>
                 </div>
                 <div class="setting-control" style="display:flex;flex-direction:column;gap:8px;width:100%;">
-                  <input type="password" id="settingsOsApiKey" class="form-input" placeholder="OpenSubtitles API key" autocomplete="off">
+                  <div class="input-with-browse">
+                    <input type="password" id="settingsOsApiKey" class="form-input secret-input" data-secret-key="opensubtitles_api_key" placeholder="OpenSubtitles API key" autocomplete="off">
+                    <button type="button" class="btn btn-outline btn-clear-secret hidden" data-target="settingsOsApiKey" title="Remove the saved key on Save">Clear</button>
+                  </div>
                   <input type="text" id="settingsOsUser" class="form-input" placeholder="Username (optional)" autocomplete="username">
-                  <input type="password" id="settingsOsPass" class="form-input" placeholder="Password (optional)" autocomplete="current-password">
+                  <div class="input-with-browse">
+                    <input type="password" id="settingsOsPass" class="form-input secret-input" data-secret-key="opensubtitles_password" placeholder="Password (optional)" autocomplete="new-password">
+                    <button type="button" class="btn btn-outline btn-clear-secret hidden" data-target="settingsOsPass" title="Remove the saved password on Save">Clear</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -955,12 +961,15 @@ Default: PSNR</span>
                     <span class="setting-label-text">TMDB API key</span>
                     <span class="setting-help" tabindex="0" aria-label="Help">
                       <span class="setting-help-icon">?</span>
-                      <span class="setting-help-tip" role="tooltip">Paste either the v3 API Key or the v4 API Read Access Token from themoviedb.org (Settings → API). Stored in server/settings.json on this machine.</span>
+                      <span class="setting-help-tip" role="tooltip">Paste either the v3 API Key or the v4 API Read Access Token from themoviedb.org (Settings → API). Stored in server/settings.json on this machine and never sent back to the browser — a saved key shows as "Saved"; type a new one to replace it.</span>
                   </span>
                   </label>
                 </div>
                 <div class="setting-control">
-                  <input type="password" id="settingsTmdbApiKey" class="form-input" placeholder="TMDB API key or Read Access Token" autocomplete="off">
+                  <div class="input-with-browse">
+                    <input type="password" id="settingsTmdbApiKey" class="form-input secret-input" data-secret-key="tmdb_api_key" placeholder="TMDB API key or Read Access Token" autocomplete="off">
+                    <button type="button" class="btn btn-outline btn-clear-secret hidden" data-target="settingsTmdbApiKey" title="Remove the saved key on Save">Clear</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1206,6 +1215,6 @@ Default: PSNR</span>
     </div>
   </div>
 
-  <script src="/static/app.js?v=pass40"></script>
+  <script src="/static/app.js?v=pass41"></script>
 </body>
 </html>
