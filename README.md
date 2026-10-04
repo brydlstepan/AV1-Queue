@@ -164,7 +164,7 @@ MP4 is the one container every target client — native apps and browsers alike 
 
 ### Audio: Opus (5.1 default), E-AC-3 optional
 
-Opus beats E-AC-3 on quality at a given bitrate and is royalty-free, so it's the default for both 5.1 and stereo. Its one constraint is being decode-only — no AVR can bitstream-passthrough it — but every modern software player decodes it natively, and the rare client that can't is cheaply covered by a Jellyfin audio-only transcode. The principle throughout: direct-play video always, and accept a cheap audio-only transcode for the odd client rather than picking a worse codec library-wide. `audio_format` (`opus` / `eac3`) is exposed per-preset for setups that rely on AVR passthrough. Standard players downmix 5.1→stereo correctly, so that needs no special handling either.
+Opus beats E-AC-3 on quality at a given bitrate and is royalty-free, so it's the default for both 5.1 and stereo. Its one constraint is being decode-only — no AVR can bitstream-passthrough it — but every modern software player decodes it natively, and the rare client that can't is cheaply covered by a Jellyfin audio-only transcode. The principle throughout: direct-play video always, and accept a cheap audio-only transcode for the odd client rather than picking a worse codec library-wide. `audio_format` (`opus` / `eac3`) is a global pipeline setting (Settings → Audio) for setups that rely on AVR passthrough. Standard players downmix 5.1→stereo correctly, so that needs no special handling either.
 
 ### HDR & Dolby Vision
 

@@ -41,7 +41,7 @@ These are product decisions, not preferences:
 
 - **Video:** AV1 via SVT-AV1-Tritium, run through HandBrakeCLI
 - **Container default:** MP4 (browser + native direct-play). WebM is an option; do not push MKV as the library default
-- **Audio default:** Opus (5.1 / stereo). `audio_format` may be `eac3` per preset for AVR bitstream setups
+- **Audio default:** Opus (5.1 / stereo). `audio_format` may be `eac3` (Settings → Audio, a global pipeline setting) for AVR bitstream setups
 - Encode only if the source **base layer stands alone**:
   - DoVi **P5** / `dv_bl_signal_compatibility_id` **0** → **skip**, leave original untouched
   - DoVi **P4** → **quarantine** for manual review

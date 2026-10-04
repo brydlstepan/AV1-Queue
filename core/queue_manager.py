@@ -1129,7 +1129,7 @@ class QueueManager:
             # Probe only: the partial's name comes from the source's (DV / HDR10
             # tokens), which would make a lost-HDR output look HDR
             out_info = self.pipeline.hdr_processor.analyze_hdr_and_dovi(
-                partial, encode_temp_dir, use_filename=False
+                partial, use_filename=False
             )
         except Exception as e:
             out_info = None
@@ -1191,7 +1191,7 @@ class QueueManager:
         expected = tag.get("hdr_label")
         if expected is None:
             expected = " ".join(str(tag.get("quality") or "").split()[1:])
-        if not cfg.get("autoname_output", True) or tag.get("hdr_label") == actual_hdr:
+        if not cfg.get("autoname_output", True) or expected == actual_hdr:
             return out_path
         mi = job.get("media_info") or {}
         predicted = Path(default_output_path(job["input_path"], cfg, tag))
@@ -1291,9 +1291,7 @@ class QueueManager:
                 or "chroma_location" not in hdr_analysis
             )
             if need_hdr:
-                hdr_analysis = self.pipeline.hdr_processor.analyze_hdr_and_dovi(
-                    inp_path, encode_temp_dir
-                )
+                hdr_analysis = self.pipeline.hdr_processor.analyze_hdr_and_dovi(inp_path)
                 mi = job.get("media_info")
                 if isinstance(mi, dict):
                     mi["hdr"] = hdr_analysis

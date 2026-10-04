@@ -854,7 +854,7 @@ class TranscodePipeline:
         crop_str = crop_to_csv(crop)
 
         if progress_cb:
-            progress_cb("Measuring average SSIMU2 on test encode...")
+            progress_cb("Measuring average SSIMU2...")
 
         script = CORE_DIR / "measure_ssimu2.py"
         cmd = [

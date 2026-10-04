@@ -20,6 +20,8 @@ from typing import Dict, Any, List, Optional, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 BIN_DIR = BASE_DIR / "bin"
+# Stream/format probe only (header read) — generous for slow network shares
+PROBE_TIMEOUT_SECONDS = 120
 
 
 _FILENAME_DOVI = re.compile(
@@ -165,8 +167,10 @@ class HDRDoviProcessor:
             str(file_path),
         ]
         try:
+            # Bounded: a hung network share would otherwise block add / probe forever
             res = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=PROBE_TIMEOUT_SECONDS,
             )
             if res.returncode != 0:
                 raise RuntimeError((res.stderr or "").strip() or f"ffprobe exit {res.returncode}")
@@ -283,7 +287,6 @@ class HDRDoviProcessor:
     def analyze_hdr_and_dovi(
         self,
         file_path: Path,
-        temp_dir: Path = None,
         probe: Optional[Dict[str, Any]] = None,
         use_filename: bool = True,
     ) -> Dict[str, Any]:
@@ -293,7 +296,6 @@ class HDRDoviProcessor:
         use_filename=False ignores filename tokens (DV, HDR10, …) — for checking
         an encode, whose name is derived from the source's and proves nothing.
         """
-        _ = temp_dir
         file_path = Path(file_path)
         probe = probe if isinstance(probe, dict) else self.probe_video_streams(file_path)
         video_stream = None
