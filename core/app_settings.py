@@ -43,6 +43,8 @@ _DEFAULTS: Dict[str, Any] = {
     "opensubtitles_username": "",
     "opensubtitles_password": "",
     "watch_folder_enabled": False,
+    # Start the queue when the watcher adds a file and the queue is idle
+    "watch_folder_autostart": True,
     "watch_folder_path": "",
     "watch_folder_output_path": "",
     "watch_folder_default_preset": "",

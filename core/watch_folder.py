@@ -203,6 +203,7 @@ class WatchFolderService:
         default_preset_id: str = "",
         output_dir: Optional[str] = None,
         log=print,
+        autostart: bool = True,
     ):
         self.watch_dir = Path(watch_dir)
         self.queue_mgr = queue_mgr
@@ -210,6 +211,9 @@ class WatchFolderService:
         self.default_preset_id = default_preset_id
         self.output_dir = Path(output_dir).resolve() if output_dir else None
         self.log = log
+        # Start the queue after an auto-queue when it isn't running (not while
+        # paused — a pause is a deliberate hold)
+        self.autostart = autostart
         self._observer: Optional[Observer] = None
         self._pending: Dict[str, threading.Thread] = {}
         self._pending_lock = threading.Lock()
@@ -304,6 +308,13 @@ class WatchFolderService:
 
             job = self.queue_mgr.add_job(str(path), output_path=str(output_path), config=config)
             self.log(f"[watch] Auto-queued {path.name} (job {job['id'][:8]}, preset={config.get('preset_id') or 'default'})")
+            if self.autostart and not self.queue_mgr.is_running and not self._cancel_event.is_set():
+                try:
+                    self.queue_mgr.start_queue()
+                    self.log("[watch] Queue was idle — started it")
+                except RuntimeError as e:
+                    # e.g. a Stop still unwinding; the job stays queued
+                    self.log(f"[watch] Could not auto-start the queue: {e}")
         except Exception as e:
             self.log(f"[watch] Failed to auto-queue {path.name}: {e}")
         finally:

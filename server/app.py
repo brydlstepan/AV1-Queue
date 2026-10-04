@@ -174,6 +174,7 @@ def _restart_watch_service():
             load_presets,
             default_preset_id=settings.get("watch_folder_default_preset", ""),
             output_dir=settings.get("watch_folder_output_path") or None,
+            autostart=bool(settings.get("watch_folder_autostart", True)),
         )
         service.start()
         _watch_service = service
@@ -244,6 +245,7 @@ class SettingsUpdateRequest(BaseModel):
     opensubtitles_username: Optional[str] = None
     opensubtitles_password: Optional[str] = None
     watch_folder_enabled: Optional[bool] = None
+    watch_folder_autostart: Optional[bool] = None
     watch_folder_path: Optional[str] = None
     watch_folder_output_path: Optional[str] = None
     watch_folder_default_preset: Optional[str] = None
