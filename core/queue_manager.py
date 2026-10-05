@@ -194,6 +194,9 @@ def _fmt_bytes(n: Any) -> str:
 
 _LAYOUT_BY_CHANNELS = {6: "5.1", 2: "stereo", 1: "mono"}
 
+# Encode-progress lines (every 5 %) only for inputs at least this long
+_PROGRESS_LOG_MIN_SECONDS = 300
+
 
 def _audio_track_line(t: Dict[str, Any], fmt_label: str) -> str:
     """'ENG TrueHD 7.1 (#2) → Opus 5.1 @ 320k' — source track and its encode target."""
@@ -1719,6 +1722,37 @@ class QueueManager:
                 )
 
 
+            # Progress lines in the job log every 5 %. Avg fps / ETA come from the
+            # active clock (pauses excluded) and the encode input's frame count —
+            # HandBrake's own avg keeps counting while the process is suspended.
+            enc_dur = float((seg_media or job.get("media_info") or {}).get("duration") or 0)
+            enc_fps = frame_rate_to_float(((job.get("media_info") or {}).get("video") or {}).get("r_frame_rate"))
+            enc_total_frames = enc_dur * enc_fps if enc_dur > 0 and enc_fps else 0.0
+            enc_progress = {"start": None, "next": 5}
+
+            def log_encode_progress(pct: float) -> None:
+                # Short inputs (Test Mode clips): HandBrake's % counts frames handed
+                # to SVT, whose look-ahead buffer is a big share of a short clip —
+                # the % races ahead and fps / ETA are meaningless. Full films: fine.
+                if enc_dur < _PROGRESS_LOG_MIN_SECONDS:
+                    return
+                now = self._active_clock()
+                if enc_progress["start"] is None:
+                    enc_progress["start"] = now  # first report: HandBrake has begun encoding
+                    return
+                if pct < enc_progress["next"]:
+                    return
+                step = int(pct // 5) * 5
+                enc_progress["next"] = step + 5
+                spent = now - enc_progress["start"]
+                bits = [f"Encode {step}%"]
+                if enc_total_frames and spent > 0:
+                    bits.append(f"{enc_total_frames * pct / 100 / spent:.2f} fps avg")
+                bits.append(f"elapsed {_fmt_duration(spent)}")
+                if 0 < pct < 100 and spent > 0:
+                    bits.append(f"ETA ~{_fmt_duration(spent * (100 - pct) / pct)}")
+                append_log(" · ".join(bits), update_stage=False)
+
             def encode_cb(data):
                 if self._cancel_event.is_set():
                     self.pipeline.kill_all_processes()
@@ -1742,6 +1776,10 @@ class QueueManager:
                     job["elapsed_seconds"] = int(time.time() - start_time)
                     last_progress_emit[0] = time.monotonic()
                     self.emit_event("job_progress", self._progress_payload(job, log=raw))
+
+                # Outside progress_lock: append_log takes it too
+                if data.get("percent") is not None and not raw:
+                    log_encode_progress(float(data["percent"]))
 
             self._wait_if_paused()
             if self._cancel_event.is_set():
