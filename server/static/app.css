@@ -203,16 +203,6 @@ body {
   color: #ffffff;
 }
 
-.btn-secondary {
-  background: var(--bg-level-1);
-  color: var(--text-main);
-  border-color: var(--border-subtle);
-}
-
-.btn-secondary:hover {
-  background: var(--bg-hover);
-}
-
 .btn-outline {
   background: transparent;
   color: var(--text-muted);
@@ -961,8 +951,6 @@ body {
   min-width: 0;
 }
 
-.q-status-queued { background: var(--bg-chip); color: var(--text-muted); }
-.q-status-active { background: var(--accent-soft); color: var(--accent-text); }
 .q-status-failed { background: rgba(244, 63, 94, 0.16); color: var(--accent-rose); }
 .q-preset-badge { background: var(--accent-soft); color: var(--accent-text); }
 .q-preset-badge.q-outdated-badge,
