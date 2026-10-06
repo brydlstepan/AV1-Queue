@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import psutil
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -419,7 +419,17 @@ async def requeue_history_item(req: ActionRequest):
     return {"status": "ok", "job": job}
 
 
-@app.post("/api/history/clear")
+async def require_json_post(request: Request) -> None:
+    """Guard for POST endpoints that take no body. Every other POST declares a
+    JSON model, which a cross-site page can't send without a CORS preflight; a
+    bodyless one has nothing to stop a page you happen to have open from firing
+    it at 127.0.0.1 (loopback needs no login). Demanding the JSON content type
+    makes the browser preflight those too, which this server never answers."""
+    if "application/json" not in request.headers.get("content-type", "").lower():
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+
+
+@app.post("/api/history/clear", dependencies=[Depends(require_json_post)])
 async def clear_history():
     for f in HISTORY_DIR.glob("*.json"):
         try:
@@ -650,7 +660,7 @@ async def get_system_stats():
     }
 
 
-@app.post("/api/server/restart")
+@app.post("/api/server/restart", dependencies=[Depends(require_json_post)])
 async def restart_server():
     """
     Kill this server process and start a fresh one (sidebar restart button).

@@ -947,6 +947,10 @@ class QueueManager:
         # A Stop only signals the worker; it may still be unwinding (killing
         # processes, moving a watch-folder source). Starting over it would clear
         # the cancel it is acting on and leave two worker loops running.
+        # Already running is not "stopping": answer at once instead of waiting.
+        with self._lock:
+            if self.is_running:
+                return
         prev = self._worker_thread
         if prev is not None and prev.is_alive() and prev is not threading.current_thread():
             prev.join(timeout=5)

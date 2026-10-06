@@ -1473,7 +1473,11 @@ document.addEventListener("DOMContentLoaded", () => {
     btnRestartServer.disabled = true;
     showLoading("Restarting server…");
     try {
-      const res = await fetch("/api/server/restart", { method: "POST" });
+      const res = await fetch("/api/server/restart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || res.statusText || "Restart failed");
@@ -4578,7 +4582,11 @@ document.addEventListener("DOMContentLoaded", () => {
       okLabel: "Delete"
     })) {
       try {
-        await fetch("/api/history/clear", { method: "POST" });
+        await fetch("/api/history/clear", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
         fetchHistory();
       } catch (e) {
         await customAlert("Error clearing history: " + e);
@@ -4767,19 +4775,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Params tab: same non-defaults-only listing as the preset editor's Preview tab
     const cfg = job.config || {};
+    const hasCfg = Object.keys(cfg).length > 0;
     setParamsPreviewBody(
       logModalParamsBody,
-      Object.keys(cfg).length
-        ? buildParamsPreviewLines({
-            crf: cfg.crf,
-            preset: cfg.preset,
-            resolution: cfg.resolution_target,
-            audio51: cfg.audio_bitrate_51,
-            audioStereo: cfg.audio_bitrate_stereo,
-            svt: cfg.svt_params,
-          })
-        : [],
-      Object.keys(cfg).length ? "All settings at defaults." : "No parameters recorded for this encode."
+      hasCfg ? collectNonDefaultEncodeParamLines(cfg) : [],
+      hasCfg ? "All settings at defaults." : "No parameters recorded for this encode."
     );
     showLogReportTab("log");
     logModalContent.scrollTop = logModalContent.scrollHeight;
