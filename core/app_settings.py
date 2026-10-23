@@ -30,8 +30,8 @@ def _ensure_settings_path() -> Path:
 
 _DEFAULTS: Dict[str, Any] = {
     "autoname_output": True,
-    "name_template_movie": "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]",
-    "name_template_episode": "[show] - S[season]E[episode] - [epname] - [[resolution]]",
+    "name_template_movie": "[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]",
+    "name_template_episode": "[show] - S[season]E[episode] - [epname] - [[resolution]] [note]",
     "svt_lp": 0,
     "svt_low_memory": False,
     "ssimu2_target": 80.0,
@@ -43,8 +43,8 @@ _DEFAULTS: Dict[str, Any] = {
     "opensubtitles_username": "",
     "opensubtitles_password": "",
     "watch_folder_enabled": False,
-    # Start the queue when the watcher adds a file and the queue is idle
-    "watch_folder_autostart": True,
+    # Start the queue when any job is added (manual or watch) and the queue is idle
+    "watch_folder_autostart": False,
     "watch_folder_path": "",
     "watch_folder_output_path": "",
     "watch_folder_default_preset": "",

@@ -20,8 +20,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const BROWSE_FAVORITES_KEY = "av1queue_browse_favorites";
   const SVT_LP_KEY = "av1queue_svt_lp";
   const SVT_LOW_MEMORY_KEY = "av1queue_svt_low_memory";
-  const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]";
-  const DEFAULT_NAME_TEMPLATE_EPISODE = "[show] - S[season]E[episode] - [epname] - [[resolution]]";
+  const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]";
+  const DEFAULT_NAME_TEMPLATE_EPISODE = "[show] - S[season]E[episode] - [epname] - [[resolution]] [note]";
 
   function stripExtToken(tpl) {
     return String(tpl || "").replace(/\.?\[ext\]/gi, "").replace(/\s+$/g, "").replace(/\.$/, "");
@@ -999,7 +999,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Secret values never reach the browser; only whether each one is saved
     secrets_set: { tmdb_api_key: false, opensubtitles_api_key: false, opensubtitles_password: false },
     watch_folder_enabled: false,
-    watch_folder_autostart: true,
+    watch_folder_autostart: false,
     watch_folder_path: "",
     watch_folder_output_path: "",
     watch_folder_default_preset: "",
@@ -1162,7 +1162,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const watchAutostart = document.getElementById("globalWatchFolderAutostart");
     if (watchAutostart) {
-      setPipelineToggle(watchAutostart, appSettings.watch_folder_autostart !== false);
+      setPipelineToggle(watchAutostart, !!appSettings.watch_folder_autostart);
       syncPipelineFieldRow(watchAutostart);
     }
     const watchPath = document.getElementById("settingsWatchFolderPath");
@@ -1175,6 +1175,13 @@ document.addEventListener("DOMContentLoaded", () => {
         sortPresetsByName(allPresets).map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
       watchPreset.value = appSettings.watch_folder_default_preset || "";
     }
+    syncWatchFolderDependentRows();
+  }
+
+  function syncWatchFolderDependentRows() {
+    const enabled = document.getElementById("globalWatchFolderEnabled")?.getAttribute("aria-checked") === "true";
+    document.querySelector('[data-pipeline-key="watchFolderPath"]')?.classList.toggle("hidden", !enabled);
+    document.querySelector('[data-pipeline-key="watchFolderPreset"]')?.classList.toggle("hidden", !enabled);
   }
 
   // Secrets (API keys, password) never come back from the server — it sends
@@ -1524,7 +1531,17 @@ document.addEventListener("DOMContentLoaded", () => {
   wireSettingsToggle(document.getElementById("globalPreserveDoviRpu"));
   wireSettingsToggle(document.getElementById("globalSubtitleSearch"));
   wireSettingsToggle(document.getElementById("globalSvtLowMemory"));
-  wireSettingsToggle(document.getElementById("globalWatchFolderEnabled"));
+  {
+    const watchEnabledToggle = document.getElementById("globalWatchFolderEnabled");
+    if (watchEnabledToggle) {
+      watchEnabledToggle.addEventListener("click", () => {
+        const next = watchEnabledToggle.getAttribute("aria-checked") !== "true";
+        setPipelineToggle(watchEnabledToggle, next);
+        syncPipelineFieldRow(watchEnabledToggle);
+        syncWatchFolderDependentRows();
+      });
+    }
+  }
   wireSettingsToggle(document.getElementById("globalWatchFolderAutostart"));
   wireSettingsToggle(document.getElementById("globalAllowBuiltinPresetEdits"));
 
@@ -3896,12 +3913,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const titleEl = document.getElementById("editJobTitle");
     const yearEl = document.getElementById("editJobYear");
     const imdbEl = document.getElementById("editJobImdb");
+    const noteEl = document.getElementById("editJobNote");
     const title = (titleEl?.value || "").trim() || tag.title || "Unknown";
     const yearRaw = (yearEl?.value || "").trim();
     const yearNum = yearRaw ? Number(yearRaw) : null;
     const year = Number.isFinite(yearNum) ? yearNum : null;
     let imdb = ((imdbEl?.value || "").trim() || tag.imdb_id || "").toLowerCase();
     if (imdb && !imdb.startsWith("tt") && /^\d+$/.test(imdb)) imdb = `tt${imdb}`;
+    const note = (noteEl?.value || "").trim();
 
     const presetId = editJobPreset ? editJobPreset.value : (job.config?.preset_id || "");
     const preset = (allPresets || []).find((p) => p.id === presetId) || {};
@@ -3932,6 +3951,7 @@ document.addEventListener("DOMContentLoaded", () => {
       quality: sanitizeFilenamePart(q),
       resolution: res || "",
       hdr: sanitizeFilenamePart(hdrTag || ""),
+      note: sanitizeFilenamePart(note),
       width: video.width ? String(video.width) : "",
       height: video.height ? String(video.height) : "",
       original: sanitizeFilenamePart(tag.original || title) || name,
@@ -4195,9 +4215,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const editTitle = document.getElementById("editJobTitle");
     const editYear = document.getElementById("editJobYear");
     const editImdb = document.getElementById("editJobImdb");
+    const editNote = document.getElementById("editJobNote");
     if (editTitle) editTitle.value = tag.title || "";
     if (editYear) editYear.value = tag.year != null ? String(tag.year) : "";
     if (editImdb) editImdb.value = tag.imdb_id || "";
+    if (editNote) editNote.value = tag.note || "";
 
     if (editJobPreset) {
       editJobPreset.innerHTML = sortPresetsByName(allPresets || []).map(p =>
@@ -4287,7 +4309,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnCancelEditJob) btnCancelEditJob.addEventListener("click", closeEditJobModal);
   if (btnCloseEditJob) btnCloseEditJob.addEventListener("click", closeEditJobModal);
 
-  ["editJobTitle", "editJobYear", "editJobImdb"].forEach((id) => {
+  ["editJobTitle", "editJobYear", "editJobImdb", "editJobNote"].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener("input", refreshEditJobNamePreview);
@@ -4316,7 +4338,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const media_tag = {
         title: (document.getElementById("editJobTitle")?.value || "").trim() || undefined,
         year: yearRaw ? Number(yearRaw) : null,
-        imdb_id: imdb || null
+        imdb_id: imdb || null,
+        note: (document.getElementById("editJobNote")?.value || "").trim()
       };
       try {
         const res = await fetch("/api/queue/update", {

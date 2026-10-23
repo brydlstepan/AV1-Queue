@@ -915,13 +915,13 @@ Default: PSNR</span>
                     <span class="setting-label-text">Movie filename template</span>
                     <span class="setting-help" tabindex="0" aria-label="Help">
                       <span class="setting-help-icon">?</span>
-                      <span class="setting-help-tip" role="tooltip">Tokens: [name] [year] [imdbid] [resolution] [hdr] [width] [height] [original]. [resolution] is the output resolution (e.g. 2160p). [hdr] is the HDR format the encode carries: DoVi, HDR10plus, DoVi HDR10plus, HLG or HDR10, empty for SDR; it's corrected after the encode to what the output actually has. Extension (mp4/webm) is appended automatically. Example with HDR: [name] ([year]) [imdbid-[imdbid]] - [[resolution] [hdr]]</span>
+                      <span class="setting-help-tip" role="tooltip">Tokens: [name] [year] [imdbid] [resolution] [hdr] [note] [width] [height] [original]. [resolution] is the output resolution (e.g. 2160p). [hdr] is the HDR format the encode carries: DoVi, HDR10plus, DoVi HDR10plus, HLG or HDR10, empty for SDR; it's corrected after the encode to what the output actually has. [note] is the optional Edit Job note (e.g. Extended), blank when unused. Extension (mp4/webm) is appended automatically. Example with HDR: [name] ([year]) [imdbid-[imdbid]] - [[resolution] [hdr]] [note]</span>
                     </span>
                   </label>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateMovie" title="Reset to default template" aria-label="Reset to default">↺</button>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="globalNameTemplateMovie" class="form-input pipeline-field" data-default="[name] ([year]) [imdbid-[imdbid]] - [[resolution]]" spellcheck="false">
+                  <input type="text" id="globalNameTemplateMovie" class="form-input pipeline-field" data-default="[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]" spellcheck="false">
                 </div>
               </div>
               <div class="setting-row setting-row--stack" data-pipeline-key="nameTemplateEpisode">
@@ -930,18 +930,18 @@ Default: PSNR</span>
                     <span class="setting-label-text">Episode filename template</span>
                     <span class="setting-help" tabindex="0" aria-label="Help">
                       <span class="setting-help-icon">?</span>
-                      <span class="setting-help-tip" role="tooltip">Used when the source looks like a series episode. Extra tokens: [show] [epname] [season] [episode] [sxxexx]. Extension is appended automatically.</span>
+                      <span class="setting-help-tip" role="tooltip">Used when the source looks like a series episode. Extra tokens: [show] [epname] [season] [episode] [sxxexx] [note]. Extension is appended automatically.</span>
                     </span>
                   </label>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateEpisode" title="Reset to default template" aria-label="Reset to default">↺</button>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="globalNameTemplateEpisode" class="form-input pipeline-field" data-default="[show] - S[season]E[episode] - [epname] - [[resolution]]" spellcheck="false">
+                  <input type="text" id="globalNameTemplateEpisode" class="form-input pipeline-field" data-default="[show] - S[season]E[episode] - [epname] - [[resolution]] [note]" spellcheck="false">
                 </div>
               </div>
               <p class="pipeline-settings-note naming-tokens-note">
                 Tokens: <code>[name]</code> <code>[year]</code> <code>[imdbid]</code> <code>[resolution]</code>
-                <code>[hdr]</code> <code>[width]</code> <code>[height]</code> <code>[original]</code>
+                <code>[hdr]</code> <code>[note]</code> <code>[width]</code> <code>[height]</code> <code>[original]</code>
                 · episodes also: <code>[show]</code> <code>[epname]</code> <code>[season]</code> <code>[episode]</code> <code>[sxxexx]</code>
                 · extension (mp4/webm) is appended automatically
               </p>
@@ -989,15 +989,31 @@ Default: PSNR</span>
                     <span class="setting-label-text">Output folder path</span>
                     <span class="setting-help" tabindex="0" aria-label="Help">
                       <span class="setting-help-icon">?</span>
-                      <span class="setting-help-tip" role="tooltip">Where finished AV1 files are written for watch-folder jobs. Leave blank to use an encoded subfolder inside the watched folder. Must not be inside the watched folder itself.</span>
+                      <span class="setting-help-tip" role="tooltip">Where finished AV1 files are written for every job (manual add and watch folder). Leave blank to keep manual jobs next to the source and watch-folder jobs in an encoded subfolder inside the watched folder. Must not be inside the watched folder itself. Independent of Watch folder auto-queue.</span>
                     </span>
                   </label>
                 </div>
                 <div class="setting-control">
                   <div class="input-with-browse">
-                    <input type="text" id="settingsWatchFolderOutputPath" class="form-input" placeholder="e.g. D:\Encoded (blank = watched folder\encoded)" autocomplete="off">
+                    <input type="text" id="settingsWatchFolderOutputPath" class="form-input" placeholder="e.g. D:\Encoded (blank = next to source / watch\encoded)" autocomplete="off">
                     <button type="button" class="btn btn-outline btn-browse-folder" data-target="settingsWatchFolderOutputPath" data-title="Select Output Folder" title="Browse…" aria-label="Browse for output folder">…</button>
                   </div>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="watchFolderAutostart">
+                <label class="setting-label" for="globalWatchFolderAutostart">
+                  <span class="setting-label-text">Start queue when a file is added</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">When any job is added (manual add or watch folder) and the queue isn't running, start it automatically. A paused queue stays paused. Starting also retries any jobs that were interrupted by a crash or restart, the same as pressing Start. Independent of Watch folder auto-queue.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalWatchFolderAutostart" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalWatchFolderAutostart" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
                 </div>
               </div>
               <div class="setting-row is-default" data-pipeline-key="watchFolderEnabled">
@@ -1013,22 +1029,6 @@ Default: PSNR</span>
                   <button type="button" class="svt-toggle pipeline-toggle" id="globalWatchFolderEnabled" role="switch" aria-checked="false" data-default="false">
                     <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
                     <span class="svt-toggle-label">Off</span>
-                  </button>
-                </div>
-              </div>
-              <div class="setting-row is-default" data-pipeline-key="watchFolderAutostart">
-                <label class="setting-label" for="globalWatchFolderAutostart">
-                  <span class="setting-label-text">Start queue when a file is added</span>
-                  <span class="setting-help" tabindex="0" aria-label="Help">
-                    <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">When the watch folder queues a new file and the queue isn't running, start it automatically. A paused queue stays paused. Starting also retries any jobs that were interrupted by a crash or restart, the same as pressing Start. Files picked up when the server starts count too.</span>
-                  </span>
-                </label>
-                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalWatchFolderAutostart" title="Reset to default (On)" aria-label="Reset to default">↺</button>
-                <div class="setting-control">
-                  <button type="button" class="svt-toggle pipeline-toggle is-on" id="globalWatchFolderAutostart" role="switch" aria-checked="true" data-default="true">
-                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
-                    <span class="svt-toggle-label">On</span>
                   </button>
                 </div>
               </div>
@@ -1111,6 +1111,10 @@ Default: PSNR</span>
                   <label for="editJobImdb">IMDb ID</label>
                   <input type="text" id="editJobImdb" class="form-input" placeholder="tt6320628">
                 </div>
+              </div>
+              <div class="form-group">
+                <label for="editJobNote">Note</label>
+                <input type="text" id="editJobNote" class="form-input" placeholder="e.g. Extended" autocomplete="off" spellcheck="false">
               </div>
               <div class="form-group">
                 <label for="editJobPreset">Quality Preset</label>

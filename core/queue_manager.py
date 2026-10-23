@@ -161,6 +161,76 @@ def _resolved_str(path: Optional[str]) -> str:
         return str(path)
 
 
+def _keep_output_dir(old_path: str | Path, desired: str | Path) -> str:
+    """Keep ``old_path``'s directory; only take the basename from ``desired``.
+
+    Custom output paths must not be yanked back next to the source when
+    autoname / HDR re-label / edit refreshes the filename.
+    """
+    old = Path(old_path) if old_path else Path()
+    des = Path(desired)
+    if not old.parts:
+        return str(des)
+    return str(old.parent / des.name)
+
+
+def _configured_output_dir(cfg: Dict[str, Any], settings: Optional[Dict[str, Any]] = None) -> Optional[Path]:
+    """Folder for finished encodes from Settings → Output folder path.
+
+    Independent of whether Watch folder auto-queue is on:
+
+    - Path set → that folder for every job (manual add and watch alike)
+    - Path blank + watch-folder job → ``<watch_dir>/encoded``
+    - Path blank + manual job → None (caller keeps next-to-source / old dir)
+
+    Refuses a configured path inside the watched folder (falls back to
+    ``encoded/``), same rule as WatchFolderService.
+    """
+    data = settings if settings is not None else load_settings()
+    configured = str(data.get("watch_folder_output_path") or "").strip()
+    watch_dir = (
+        cfg.get("watch_source_dir")
+        or str(data.get("watch_folder_path") or "").strip()
+        or None
+    )
+
+    if configured:
+        out = Path(configured)
+        if watch_dir:
+            try:
+                watch_resolved = Path(watch_dir).resolve()
+                out_resolved = out.resolve()
+                if watch_resolved == out_resolved or watch_resolved in out_resolved.parents:
+                    return Path(watch_dir) / "encoded"
+                return out_resolved
+            except OSError:
+                return out
+        try:
+            return out.resolve()
+        except OSError:
+            return out
+
+    if cfg.get("watch_source_dir"):
+        return Path(cfg["watch_source_dir"]) / "encoded"
+    return None
+
+
+def _place_in_output_dir(
+    desired: str | Path,
+    *,
+    cfg: Dict[str, Any],
+    old_path: str = "",
+    settings: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Put ``desired``'s basename in the configured output dir, else keep ``old_path``'s dir."""
+    out_dir = _configured_output_dir(cfg, settings)
+    if out_dir is not None:
+        return str(out_dir / Path(desired).name)
+    if old_path:
+        return _keep_output_dir(old_path, desired)
+    return str(desired)
+
+
 def _fmt_duration(seconds: Any) -> str:
     """'2h 35m 46s' / '1m 18s' / '9s' / '0.4s' for job-log lines."""
     try:
@@ -528,9 +598,23 @@ class QueueManager:
             resolution_target=default_config.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
         )
 
-        # Default output path: library naming when enabled, else _av1_boost
+        # Default output path: library naming when enabled, else _av1_boost.
+        # When Output folder path is set (Watch settings), every job — manual or
+        # watch — lands there. Blank + watch job → watch\encoded; blank + manual
+        # → next to the source. Watch auto-queue On/Off does not change this.
         if not output_path:
             output_path = default_output_path(str(inp), default_config, media_tag)
+        use_library_in_out = (
+            bool(_configured_output_dir(default_config, settings) or default_config.get("watch_source_dir"))
+            and default_config.get("autoname_output")
+            and media_tag
+        )
+        output_path = _place_in_output_dir(
+            library_output_path(inp, media_tag, config=default_config) if use_library_in_out else output_path,
+            cfg=default_config,
+            old_path=str(output_path),
+            settings=settings,
+        )
 
         job = {
             "id": str(uuid.uuid4()),
@@ -573,7 +657,25 @@ class QueueManager:
             self.jobs.append(job)
         self.save_queue()
         self.emit_event("job_added", job)
+        self._maybe_autostart_after_add()
         return job
+
+    def _maybe_autostart_after_add(self) -> None:
+        """If Settings → Start queue when a file is added, start an idle queue.
+
+        Applies to every add (manual and watch). A paused queue stays paused
+        (is_running is still true while paused). Independent of watch-folder
+        auto-queue being on.
+        """
+        if not load_settings().get("watch_folder_autostart"):
+            return
+        if self.is_running:
+            return
+        try:
+            self.start_queue()
+        except RuntimeError:
+            # e.g. a Stop still unwinding; the job stays queued
+            pass
 
     def update_job(self, job_id: str, config_updates: Optional[Dict[str, Any]] = None,
                    media_tag_updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -606,8 +708,8 @@ class QueueManager:
             tag = dict(job.get("media_tag") or {})
             if media_tag_updates:
                 for k, v in media_tag_updates.items():
-                    if v is None and k in ("year", "imdb_id", "tmdb_id"):
-                        tag[k] = None
+                    if v is None and k in ("year", "imdb_id", "tmdb_id", "note"):
+                        tag[k] = None if k != "note" else ""
                     elif v is not None:
                         tag[k] = v
                 tag["verified"] = True
@@ -632,6 +734,9 @@ class QueueManager:
                 )
                 job["media_tag"] = tag
                 desired = default_output_path(job["input_path"], cfg, tag)
+                desired = _place_in_output_dir(
+                    desired, cfg=cfg, old_path=job.get("output_path") or ""
+                )
                 reserved = self._reserved_output_paths(exclude_job_id=job_id)
                 job["output_path"] = str(
                     allocate_unique_output_path(desired, reserved=reserved)
@@ -714,9 +819,7 @@ class QueueManager:
             old_path = job.get("output_path") or ""
             reserved.discard(_resolved_str(old_path))
             desired = default_output_path(job["input_path"], cfg, tag)
-            if old_path:
-                # Stay in the folder the job already writes to
-                desired = str(Path(old_path).parent / Path(desired).name)
+            desired = _place_in_output_dir(desired, cfg=cfg, old_path=old_path)
             new_path = str(allocate_unique_output_path(desired, reserved=reserved))
             job["output_path"] = new_path
             reserved.add(_resolved_str(new_path))
@@ -1388,7 +1491,8 @@ class QueueManager:
             return out_path
         mi = job.get("media_info") or {}
         predicted = Path(default_output_path(job["input_path"], cfg, tag))
-        # A collision suffix (_2, _3, …) may have been added at queue time
+        # A collision suffix (_2, _3, …) may have been added at queue time.
+        # Compare stems only — the job may write to a custom / watch output dir.
         if not out_path.stem.startswith(predicted.stem):
             return out_path
         new_tag = refresh_media_tag_quality(
@@ -1401,7 +1505,13 @@ class QueueManager:
             hdr_override=actual_hdr,
         )
         job["media_tag"] = new_tag
-        desired = Path(default_output_path(job["input_path"], cfg, new_tag))
+        desired = Path(
+            _place_in_output_dir(
+                default_output_path(job["input_path"], cfg, new_tag),
+                cfg=cfg,
+                old_path=str(out_path),
+            )
+        )
         if desired.stem == predicted.stem:
             return out_path  # the template has no [hdr] token
         with self._lock:
