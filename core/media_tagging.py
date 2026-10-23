@@ -4,7 +4,7 @@ Parse scene / release filenames and build library-style output names.
 Input (typical):
   Dune.2021.2160p.BluRay.REMUX.HEVC.DV.DTS-HD.MA.TrueHD.7.1.Atmos-TNT.mkv
 
-Output (default template; add [hdr] for e.g. "[2160p DoVi]"):
+Output (default template; add [hdr] for e.g. "[2160p DoVi]", [note] for e.g. Extended):
   Dune (2021) [imdbid-tt1160419] - [2160p].mp4
 """
 
@@ -407,8 +407,8 @@ def title_to_dots(title: str) -> str:
 
 
 
-DEFAULT_MOVIE_TEMPLATE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]]"
-DEFAULT_EPISODE_TEMPLATE = "[show] - S[season]E[episode] - [epname] - [[resolution]]"
+DEFAULT_MOVIE_TEMPLATE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]"
+DEFAULT_EPISODE_TEMPLATE = "[show] - S[season]E[episode] - [epname] - [[resolution]] [note]"
 
 _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -441,6 +441,7 @@ def _template_values(
     epname: str = "",
     season: Optional[int] = None,
     episode: Optional[int] = None,
+    note: str = "",
 ) -> Dict[str, str]:
     q = (quality or "").strip()
     res = q if q and q != "AV1" else ""
@@ -465,6 +466,7 @@ def _template_values(
         "height": str(int(height)) if height else "",
         "resolution": res,
         "hdr": _sanitize_filename_part(hdr),
+        "note": _sanitize_filename_part(note),
         "ext": (ext or "mp4").lstrip("."),
         "original": _sanitize_filename_part(original) or name,
         "show": show_s,
@@ -869,6 +871,7 @@ def build_media_tag(
         epname=(ep or {}).get("epname") or "",
         season=(ep or {}).get("season"),
         episode=(ep or {}).get("episode"),
+        note="",
     )
     tpl = (
         str(settings.get("name_template_episode") or DEFAULT_EPISODE_TEMPLATE)
@@ -893,6 +896,8 @@ def build_media_tag(
         # Persisted so refresh_media_tag_quality re-renders [original] from the
         # same value this pass used, instead of falling back to the title.
         "original": input_path.stem,
+        # Optional Edit Job suffix for [note] (e.g. Extended); blank by default
+        "note": "",
         "media_kind": kind,
         "show": values.get("show") or "",
         "epname": values.get("epname") or "",
@@ -954,6 +959,7 @@ def refresh_media_tag_quality(
         epname=tag.get("epname") or "",
         season=tag.get("season"),
         episode=tag.get("episode"),
+        note=str(tag.get("note") or ""),
     )
     tpl = (
         str(settings.get("name_template_episode") or DEFAULT_EPISODE_TEMPLATE)

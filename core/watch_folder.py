@@ -12,9 +12,10 @@ manually-added job lands in — so a file already queued manually is never
 double-added, and vice versa. This is the only interaction point with manual
 add; the manual add/browse/drag-drop path itself is unchanged.
 
-The finished AV1 output is written to <watch_dir>/encoded/ (never back into the
-watched folder itself, or the watcher would re-detect its own output as a new
-source and re-encode it forever). Once that output is verified,
+The finished AV1 output is written to the configured output folder, or to
+<watch_dir>/encoded/ when that setting is blank (never back into the watched
+folder itself, or the watcher would re-detect its own output as a new source
+and re-encode it forever). Once that output is verified,
 QueueManager._execute_single_job moves the original source into
 <watch_dir>/encoded_sources/; a source whose job fails goes to failed/, one
 skipped by the Dolby Vision policy to skipped/ (so the startup sweep doesn't
@@ -203,7 +204,6 @@ class WatchFolderService:
         default_preset_id: str = "",
         output_dir: Optional[str] = None,
         log=print,
-        autostart: bool = True,
     ):
         self.watch_dir = Path(watch_dir)
         self.queue_mgr = queue_mgr
@@ -211,9 +211,8 @@ class WatchFolderService:
         self.default_preset_id = default_preset_id
         self.output_dir = Path(output_dir).resolve() if output_dir else None
         self.log = log
-        # Start the queue after an auto-queue when it isn't running (not while
-        # paused — a pause is a deliberate hold)
-        self.autostart = autostart
+        # Queue autostart after add is handled by QueueManager.add_job from the
+        # shared "Start queue when a file is added" setting (manual + watch).
         self._observer: Optional[Observer] = None
         self._pending: Dict[str, threading.Thread] = {}
         self._pending_lock = threading.Lock()
@@ -244,6 +243,28 @@ class WatchFolderService:
             self._observer.stop()
             self._observer.join(timeout=5)
             self._observer = None
+
+    def _resolve_out_dir(self) -> Path:
+        """Output folder for watch jobs: setting, or ``<watch_dir>/encoded``.
+
+        Refuses a path inside the watched folder (would re-detect our own
+        outputs) and falls back to the encoded/ subfolder.
+        """
+        out_dir = self.output_dir if self.output_dir else (self.watch_dir / ENCODED_DIRNAME)
+        if not self.output_dir:
+            return out_dir
+        try:
+            watch_resolved = self.watch_dir.resolve()
+            out_resolved = out_dir.resolve()
+            if watch_resolved == out_resolved or watch_resolved in out_resolved.parents:
+                self.log(
+                    f"[watch] Output folder must not be inside the watched folder — "
+                    f"using {ENCODED_DIRNAME}/ instead ({out_dir})"
+                )
+                return self.watch_dir / ENCODED_DIRNAME
+        except OSError:
+            pass
+        return out_dir
 
     def handle_candidate(self, path: Path) -> None:
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -277,8 +298,28 @@ class WatchFolderService:
                     str(Path(j["input_path"]).resolve()).lower() == resolved
                     for j in self.queue_mgr.jobs
                 )
-            if already_queued:
+                # An Edit once rewrote watch outputs next to the source — don't
+                # treat a deliverable sitting in the watch folder as a new source.
+                is_known_output = any(
+                    str(Path(j.get("output_path") or "").resolve()).lower() == resolved
+                    for j in self.queue_mgr.jobs
+                )
+            if already_queued or is_known_output:
                 return
+
+            out_dir = self._resolve_out_dir()
+            # Stray copy of a finished encode left in the watch root (same name
+            # already in the output folder) — skip rather than re-encode forever.
+            if path.suffix.lower() in {".mp4", ".webm"}:
+                try:
+                    if (out_dir / path.name).is_file() and (out_dir / path.name).resolve() != path.resolve():
+                        self.log(
+                            f"[watch] Skipping {path.name} — already present in output folder "
+                            f"({out_dir})"
+                        )
+                        return
+                except OSError:
+                    pass
 
             presets = self.load_presets_fn()
             preset, preset_via = resolve_preset(path.name, presets, self.default_preset_id)
@@ -286,35 +327,20 @@ class WatchFolderService:
 
             # The output must never land back inside the watched folder itself —
             # otherwise the watcher immediately re-detects its own output as a new
-            # source and re-encodes it forever. Route it into encoded/ (non-recursive
-            # watch, so it's never re-scanned) — separate from encoded_sources/,
+            # source and re-encodes it forever. Route it into the configured
+            # output folder (default: encoded/), separate from encoded_sources/,
             # where the verified original source is moved to on completion.
+            # Basename is a placeholder; add_job upgrades it to library naming
+            # when autoname is on, keeping this directory.
             ext = "webm" if str(config.get("container", "mp4")).lower() == "webm" else "mp4"
-            out_dir = self.output_dir if self.output_dir else (self.watch_dir / ENCODED_DIRNAME)
-            if self.output_dir:
-                try:
-                    watch_resolved = self.watch_dir.resolve()
-                    out_resolved = out_dir.resolve()
-                    if watch_resolved == out_resolved or watch_resolved in out_resolved.parents:
-                        self.log(
-                            f"[watch] Output folder must not be inside the watched folder — "
-                            f"using {ENCODED_DIRNAME}/ instead ({out_dir})"
-                        )
-                        out_dir = self.watch_dir / ENCODED_DIRNAME
-                except OSError:
-                    pass
             out_dir.mkdir(parents=True, exist_ok=True)
             output_path = out_dir / f"{path.stem}_av1_boost.{ext}"
 
             job = self.queue_mgr.add_job(str(path), output_path=str(output_path), config=config)
-            self.log(f"[watch] Auto-queued {path.name} (job {job['id'][:8]}, preset={config.get('preset_id') or 'default'})")
-            if self.autostart and not self.queue_mgr.is_running and not self._cancel_event.is_set():
-                try:
-                    self.queue_mgr.start_queue()
-                    self.log("[watch] Queue was idle — started it")
-                except RuntimeError as e:
-                    # e.g. a Stop still unwinding; the job stays queued
-                    self.log(f"[watch] Could not auto-start the queue: {e}")
+            self.log(
+                f"[watch] Auto-queued {path.name} → {Path(job['output_path']).parent} "
+                f"(job {job['id'][:8]}, preset={config.get('preset_id') or 'default'})"
+            )
         except Exception as e:
             self.log(f"[watch] Failed to auto-queue {path.name}: {e}")
         finally:

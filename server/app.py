@@ -174,7 +174,6 @@ def _restart_watch_service():
             load_presets,
             default_preset_id=settings.get("watch_folder_default_preset", ""),
             output_dir=settings.get("watch_folder_output_path") or None,
-            autostart=bool(settings.get("watch_folder_autostart", True)),
         )
         service.start()
         _watch_service = service
