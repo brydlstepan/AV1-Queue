@@ -19,7 +19,6 @@
     "qp-scale-compress-strength": 2.5,
     "ac-bias": 1.5,
     "complex-hvs": 1,
-    "enable-tf": 3,
     "enable-cdef": 1,
     "enable-restoration": 0,
     "enable-alt-cdef": 3,

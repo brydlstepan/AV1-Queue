@@ -1,0 +1,26 @@
+{
+  "id": "preset_1792686553375",
+  "name": "FHD",
+  "description": "",
+  "crf": 34.0,
+  "preset": 3,
+  "resolution_target": "1080p",
+  "audio_bitrate_51": "320k",
+  "audio_bitrate_stereo": "160k",
+  "audio_languages": null,
+  "audio_best_only": true,
+  "svt_params": {
+    "noise": 10,
+    "noise-chroma": 1,
+    "noise-adaptive-filtering": 0,
+    "enable-dlf": 2,
+    "qp-scale-compress-strength": 2.5,
+    "ac-bias": 1.5,
+    "enable-cdef": 1,
+    "enable-restoration": 0,
+    "enable-alt-cdef": 3,
+    "qm-min": 4,
+    "qm-max": 14,
+    "tune": 0
+  }
+}
