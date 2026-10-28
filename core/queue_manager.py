@@ -22,9 +22,10 @@ from core.handbrake_encode import (
     parse_applied_crop,
     split_removed_svt_params,
     summarize_handbrake_log,
+    target_box_for,
 )
 from core.hdr_dovi import svt_chroma_position
-from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format, target_height_for
+from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format
 from core.app_settings import (
     load_settings, save_settings, get_pipeline_settings, JOB_CONFIG_DEFAULTS,
 )
@@ -1355,7 +1356,7 @@ class QueueManager:
             audio_tracks=ordered_audio,
             audio_track_numbers=hb_audio_track_numbers(all_audio, ordered_audio),
             autocrop=autocrop,
-            target_height=target_height_for(
+            target_box=target_box_for(
                 cfg.get("resolution_target", JOB_CONFIG_DEFAULTS["resolution_target"])
             ),
             # P7 → 8.1 conversion and RPU crop correction are HandBrake's own
@@ -1715,7 +1716,9 @@ class QueueManager:
                 f"Settings: preset {preset_label}",
                 f"CRF {float(cfg.get('crf', JOB_CONFIG_DEFAULTS['crf'])):g}",
                 f"SVT preset {cfg.get('preset', JOB_CONFIG_DEFAULTS['preset'])}",
-                "source resolution" if res_target == "source" else f"max {res_target}",
+                "source resolution" if res_target == "source" else (
+                    f"{res_target} (fit in {'×'.join(str(x) for x in target_box_for(res_target))})"
+                ),
                 container_early.upper(),
                 f"audio {audio_label}",
                 "autocrop on" if cfg.get("autocrop", True) else "autocrop off",
@@ -1936,7 +1939,6 @@ class QueueManager:
                         encoded_file=final_out,
                         ssimu2_mode=cfg.get("ssimu2", "auto"),
                         crop=crop,
-                        resolution_target=cfg.get("resolution_target", JOB_CONFIG_DEFAULTS["resolution_target"]),
                         skip=metric_skip,
                         progress_cb=lambda msg: append_log(msg, update_stage=True),
                         cancel_event=self._cancel_event,

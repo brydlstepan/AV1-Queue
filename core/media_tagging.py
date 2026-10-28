@@ -286,6 +286,9 @@ def resolution_label(width: Optional[int], height: Optional[int]) -> str:
     short_edge = min(w, h) if w and h else 0
     if long_edge >= 3800 or short_edge >= 2100 or h >= 2160:
         return "2160p"
+    # Width-led, like Jellyfin / Plex: 2560x1066 (scope at 1440p) is 1440p
+    if long_edge >= 2500 or h >= 1440:
+        return "1440p"
     if long_edge >= 1900 or h >= 1080:
         return "1080p"
     if long_edge >= 1200 or h >= 720:
@@ -347,22 +350,25 @@ def resolution_from_target(
     hints: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
-    Filename resolution label from preset Resolution Target.
-    2160p/4k/uhd → 2160p; 1440p/1080p as-is; source → probe / filename hint.
+    Filename resolution label for the encode: the source's size fitted into
+    the Resolution Target's box (downscale only), then labelled — so a 1080p
+    source with a 1440p target stays [1080p]. Without probe data, the target's
+    own label (or, for source, the filename hint).
     """
+    from core.handbrake_encode import fit_in_box, target_box_for
+
     target = str(resolution_target or "source").strip().lower()
-    if target in ("2160p", "4k", "uhd"):
-        return "2160p"
-    if target == "1440p":
-        return "1440p"
-    if target == "1080p":
-        return "1080p"
-    if target == "720p":
-        return "720p"
-    # source (or unknown): use actual video / filename
-    res = resolution_label((video or {}).get("width"), (video or {}).get("height"))
-    if res:
-        return res
+    if target in ("4k", "uhd"):
+        target = "2160p"
+    w = (video or {}).get("width")
+    h = (video or {}).get("height")
+    if w and h:
+        fw, fh = fit_in_box(w, h, target_box_for(target))
+        res = resolution_label(fw, fh)
+        if res:
+            return res
+    if target in ("2160p", "1440p", "1080p", "720p"):
+        return target
     return str((hints or {}).get("resolution") or "")
 
 

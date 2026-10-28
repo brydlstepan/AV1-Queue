@@ -14,10 +14,15 @@ Mapping from the job config:
     sampled frames (least crop wins, so a mixed-aspect / IMAX title keeps its
     full frame); the crop it applied is read back from its log
     (parse_applied_crop) for SSIMU2 and the job stats. Off → --crop-mode none
-  - resolution_target → --maxHeight (downscale only) with --loose-anamorphic,
-    so the width scales with it and square pixels stay square — HandBrake's
+  - resolution_target → --maxWidth / --maxHeight: the picture is downscaled
+    (never up) to fit inside the target's box, keeping its shape, the way
+    Blu-ray, streaming and HandBrake's own presets define "1080p" — a 2.40:1
+    3840x1600 source at 1080p is 1920x800, at 1440p 2560x1066. With
+    --non-anamorphic so pixels are always square (SAR 1:1): when a crop doesn't
+    scale to exact even sizes, --loose-anamorphic would keep the shape with a
+    ~0.1 % pixel-aspect correction instead, and a non-1:1 SAR reads as
+    "anamorphic" to some players / Jellyfin client profiles. HandBrake's
     default (auto) anamorphic would keep the width and stretch the pixels
-    instead (3840x1600 at 1080p → 3840x1080 with a 27:40 PAR, not 2592x1080)
   - DoVi P7 → 8.1 conversion, RPU crop correction and HDR10+ passthrough are
     HandBrake's (--hdr-dynamic-metadata); the static HDR10 flags come from its
     own scan of the source
@@ -30,7 +35,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 HANDBRAKE_DIR = BASE_DIR / "bin" / "handbrake"
@@ -67,6 +72,36 @@ AUTOCROP_PREVIEWS = 30
 _APPLIED_CROP_RE = re.compile(r"\+ source: \d+ \* \d+, crop \((\d+)/(\d+)/(\d+)/(\d+)\)")
 # Logged when the crop/scale filter would be a no-op (nothing cropped or scaled)
 _NO_CROP_SCALE = "work: skipping crop/scale filter"
+
+
+# resolution_target → the box the picture must fit inside; (0, 0) = keep source
+RESOLUTION_BOXES: Dict[str, Tuple[int, int]] = {
+    "source": (0, 0),
+    "1080p": (1920, 1080),
+    "1440p": (2560, 1440),
+    "2160p": (3840, 2160),
+}
+
+
+def target_box_for(resolution_target: Any) -> Tuple[int, int]:
+    """(max width, max height) for a resolution_target label; (0, 0) = no limit."""
+    return RESOLUTION_BOXES.get(str(resolution_target or "source").strip().lower(), (0, 0))
+
+
+def fit_in_box(width: int, height: int, box: Tuple[int, int]) -> Tuple[int, int]:
+    """
+    Size a width x height picture comes out at inside box: downscale only,
+    aspect kept, even dimensions (as HandBrake rounds them). An approximation
+    for labels / naming — HandBrake's own result is the reference.
+    """
+    w, h = int(width or 0), int(height or 0)
+    bw, bh = box
+    if not (w and h and bw and bh):
+        return w, h
+    scale = min(bw / w, bh / h, 1.0)
+    if scale >= 1.0:
+        return w, h
+    return int(round(w * scale / 2)) * 2, int(round(h * scale / 2)) * 2
 
 
 def handbrake_available() -> bool:
@@ -182,7 +217,7 @@ def build_handbrake_command(
     audio_tracks: List[Dict[str, Any]],
     audio_track_numbers: List[int],
     autocrop: bool,
-    target_height: int,
+    target_box: Tuple[int, int],
     dynamic_metadata: str,
 ) -> List[str]:
     """
@@ -218,9 +253,11 @@ def build_handbrake_command(
         cmd.extend(["--crop-mode", "conservative", "--previews", f"{AUTOCROP_PREVIEWS}:0"])
     else:
         cmd.extend(["--crop-mode", "none"])
-    cmd.append("--loose-anamorphic")
-    if target_height and target_height > 0:
-        cmd.extend(["--maxHeight", str(int(target_height))])
+    cmd.append("--non-anamorphic")  # square pixels, see the module docstring
+    box_w, box_h = target_box or (0, 0)
+    if box_w > 0 and box_h > 0:
+        # Fit inside the box (downscale only); HandBrake applies both limits
+        cmd.extend(["--maxWidth", str(int(box_w)), "--maxHeight", str(int(box_h))])
 
     if dynamic_metadata and dynamic_metadata != "none":
         cmd.extend(["--hdr-dynamic-metadata", dynamic_metadata])

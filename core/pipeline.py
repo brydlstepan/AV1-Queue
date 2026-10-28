@@ -81,15 +81,6 @@ def format_hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-# Resolution-target label → downscale height (0 = keep source).
-RES_HEIGHT_MAP = {"source": 0, "1080p": 1080, "1440p": 1440, "2160p": 2160}
-
-
-def target_height_for(resolution_target: Any) -> int:
-    """Map a resolution_target label to a downscale height (0 = keep source)."""
-    return RES_HEIGHT_MAP.get(str(resolution_target).lower(), 0)
-
-
 def normalize_audio_format(value: Any) -> str:
     """Canonical audio format: 'opus' or 'eac3', defaulting to 'opus'."""
     fmt = (str(value) if value else "opus").strip().lower()
@@ -841,7 +832,6 @@ class TranscodePipeline:
         encoded_file: Path,
         ssimu2_mode: str = "auto",
         crop: Optional[Dict[str, int]] = None,
-        resolution_target: str = "source",
         skip: int = 1,
         progress_cb: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
@@ -850,7 +840,6 @@ class TranscodePipeline:
         Score source vs final encode with SSIMULACRA2 (avg / p15 / min).
         Runs in the VS venv as a subprocess.
         """
-        target_height = target_height_for(resolution_target)
         crop_str = crop_to_csv(crop)
 
         if progress_cb:
@@ -863,7 +852,6 @@ class TranscodePipeline:
             "--encoded", str(encoded_file),
             "--mode", str(ssimu2_mode or "auto"),
             "--crop", crop_str,
-            "--target-height", str(target_height),
             "--skip", str(max(1, int(skip))),
         ]
 
