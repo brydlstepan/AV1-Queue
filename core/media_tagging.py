@@ -69,7 +69,7 @@ def _normalize_stem(filename: str) -> str:
         name = name[:-1]
     stem = Path(name).stem
     # Test suffix first — stripping _av1_boost first would leave "_test_…" behind
-    stem = re.sub(r"_test_\d+-\d+_av1_boost$", "", stem, flags=re.I)
+    stem = re.sub(r"_test_.+_av1_boost$", "", stem, flags=re.I)
     stem = re.sub(r"_av1_boost$", "", stem, flags=re.I)
     stem = stem.strip(" .")
     # Scene group tag: …Atmos-TNT. Only strip it on names that actually look like
@@ -997,8 +997,17 @@ def library_output_path(
     if Path(base).suffix.lower() != f".{ext}":
         base = f"{Path(base).stem}.{ext}"
     if cfg.get("test_mode"):
-        start_tag = str(cfg.get("trim_start", "start")).replace(":", "")
-        end_tag = str(cfg.get("trim_end", "end")).replace(":", "")
-        stem = Path(base).stem
-        base = f"{stem}.test_{start_tag}-{end_tag}.{ext}"
+        base = f"{Path(base).stem}.test_{test_name_tag(cfg)}.{ext}"
     return str(input_path.parent / base)
+
+
+def test_name_tag(config: Dict[str, Any]) -> str:
+    """What a Test Mode output is named after: the preset (so A/B encodes of one
+    segment are told apart), or the segment's time range for jobs without one."""
+    cfg = config or {}
+    preset = _sanitize_filename_part(cfg.get("preset_name") or "")
+    if preset:
+        return preset
+    start_tag = str(cfg.get("trim_start", "start")).replace(":", "")
+    end_tag = str(cfg.get("trim_end", "end")).replace(":", "")
+    return f"{start_tag}-{end_tag}"

@@ -4022,10 +4022,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const testFields = getTestModeJobFields();
     const testOn = !!(testFields.test_mode || job.config?.test_mode);
     if (testOn) {
+      // Mirror core/media_tagging.test_name_tag: the preset name, else the time range
       const startTag = String(testFields.trim_start || job.config?.trim_start || "start").replace(/:/g, "");
       const endTag = String(testFields.trim_end || job.config?.trim_end || "end").replace(/:/g, "");
+      const testTag = sanitizeFilenamePart(job.config?.preset_name || "") || `${startTag}-${endTag}`;
       const stem = libraryName.replace(/\.[^.]+$/, "");
-      libraryName = `${stem}.test_${startTag}-${endTag}.${ext}`;
+      libraryName = `${stem}.test_${testTag}.${ext}`;
     }
     return libraryName;
   }
