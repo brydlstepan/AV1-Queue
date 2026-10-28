@@ -20,6 +20,7 @@ from core.handbrake_encode import (
     handbrake_available,
     hb_audio_track_numbers,
     parse_applied_crop,
+    drop_crashing_svt_combos,
     split_removed_svt_params,
     summarize_handbrake_log,
     target_box_for,
@@ -1340,6 +1341,9 @@ class QueueManager:
                 + " — edit the preset to clear them",
                 update_stage=False,
             )
+        hb_params, combo_notes = drop_crashing_svt_combos(hb_params)
+        for note in combo_notes:
+            append_log(f"WARNING: {note}", update_stage=False)
         # HandBrake leaves the AV1 chroma siting unset; take it from the source
         chroma = svt_chroma_position(hdr_analysis.get("chroma_location"))
         if chroma:

@@ -3128,3 +3128,15 @@ select.form-input {
 .folder-picker-actions {
   gap: 10px;
 }
+
+/* SVT option combination the encoder can't run (see syncSvtConflicts) */
+.setting-row.has-conflict {
+  flex-wrap: wrap;
+}
+
+.svt-conflict-note {
+  flex: 1 0 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent-amber);
+}

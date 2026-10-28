@@ -2181,7 +2181,31 @@ document.addEventListener("DOMContentLoaded", () => {
     const row = document.querySelector(`.setting-row[data-svt-key="${def.key}"]`);
     if (!row) return;
     row.classList.toggle("is-default", isSvtDefault(def, getSvtInputValue(def)));
+    syncSvtConflicts();
     updatePresetCommandPreview();
+  }
+
+  // Combinations this SVT-AV1-Tritium build crashes or hangs on. The encode
+  // drops the option anyway (core/handbrake_encode.drop_crashing_svt_combos);
+  // this just says so in the editor instead of silently.
+  function syncSvtConflicts() {
+    const row = document.querySelector('.setting-row[data-svt-key="enable-overlays"]');
+    if (!row) return;
+    const ovDef = ESSENTIAL_SVT_SETTINGS.find(d => d.key === "enable-overlays");
+    const tfDef = ESSENTIAL_SVT_SETTINGS.find(d => d.key === "enable-tf");
+    const conflict = !!(ovDef && tfDef)
+      && Number(getSvtInputValue(ovDef)) === 1
+      && Number(getSvtInputValue(tfDef)) === 3;
+    let note = row.querySelector(".svt-conflict-note");
+    if (conflict && !note) {
+      note = document.createElement("div");
+      note.className = "svt-conflict-note";
+      note.textContent = "Ignored while enable-tf is 3 — this combination crashes or hangs the encoder. Turn one of them off.";
+      row.appendChild(note);
+    } else if (!conflict && note) {
+      note.remove();
+    }
+    row.classList.toggle("has-conflict", conflict);
   }
 
   const presetCommandPreviewBody = document.getElementById("presetCommandPreviewBody");
@@ -2310,6 +2334,8 @@ document.addEventListener("DOMContentLoaded", () => {
         syncSvtNumberSpinners(input, def);
       }
     });
+
+    syncSvtConflicts();
 
     presetAdvancedFields.querySelectorAll(".svt-number-btn").forEach(btn => {
       btn.addEventListener("click", (e) => {
