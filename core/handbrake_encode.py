@@ -57,6 +57,38 @@ _MIXDOWN = {6: "5point1", 2: "stereo", 1: "mono"}
 REMOVED_SVT_PARAMS = frozenset({"enable-daala-rd", "enable-daala-filtering"})
 
 
+def _svt_int(params: Dict[str, Any], key: str) -> Optional[int]:
+    for k, v in (params or {}).items():
+        if str(k).lstrip("-") == key:
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def drop_crashing_svt_combos(svt_params: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    (params safe to pass, notes for the job log). Combinations this
+    SVT-AV1-Tritium build can't encode are defused here, whatever the preset:
+
+    - enable-overlays=1 with enable-tf=3: HandBrake crashes (access violation)
+      at presets 3 and 6 and hangs forever at preset 10 (tested on the bundled
+      build). Overlays are dropped; TF mode 3 is the setting people pick on
+      purpose (denoising), and overlays work with TF 0-2.
+    """
+    params = dict(svt_params or {})
+    notes: List[str] = []
+    if _svt_int(params, "enable-overlays") == 1 and _svt_int(params, "enable-tf") == 3:
+        for k in [k for k in params if str(k).lstrip("-") == "enable-overlays"]:
+            params.pop(k)
+        notes.append(
+            "enable-overlays ignored: with enable-tf 3 it crashes or hangs the "
+            "encoder (SVT-AV1-Tritium bug) — turn one of them off in the preset"
+        )
+    return params, notes
+
+
 def split_removed_svt_params(svt_params: Dict[str, Any]) -> tuple:
     """(params the encoder understands, sorted names of removed ones that were present)."""
     kept = {k: v for k, v in (svt_params or {}).items() if str(k).lstrip("-") not in REMOVED_SVT_PARAMS}
