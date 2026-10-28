@@ -31,7 +31,8 @@ from core.app_settings import (
     load_settings, save_settings, get_pipeline_settings, JOB_CONFIG_DEFAULTS,
 )
 from core.media_tagging import (
-    build_media_tag, library_output_path, output_hdr_label, refresh_media_tag_quality, test_name_tag,
+    build_media_tag, library_output_path, name_subdirs, output_hdr_label, refresh_media_tag_quality,
+    strip_name_subdirs, test_name_tag,
 )
 from core.subtitle_extract import select_default_subtitle_indices
 from core.subtitle_search import search_and_download_missing
@@ -165,17 +166,19 @@ def _resolved_str(path: Optional[str]) -> str:
         return str(path)
 
 
-def _keep_output_dir(old_path: str | Path, desired: str | Path) -> str:
-    """Keep ``old_path``'s directory; only take the basename from ``desired``.
+def _keep_output_dir(old_path: str | Path, rel: str | Path, old_subdirs: Tuple[str, ...] = ()) -> str:
+    """Keep ``old_path``'s directory; put ``rel`` (file name, plus any template
+    subfolders) there.
 
     Custom output paths must not be yanked back next to the source when
-    autoname / HDR re-label / edit refreshes the filename.
+    autoname / HDR re-label / edit refreshes the filename. ``old_subdirs`` are
+    the template subfolders the old name was in — the kept directory is above
+    them, so a renamed folder replaces the old one instead of nesting in it.
     """
     old = Path(old_path) if old_path else Path()
-    des = Path(desired)
     if not old.parts:
-        return str(des)
-    return str(old.parent / des.name)
+        return str(rel)
+    return str(strip_name_subdirs(old.parent, old_subdirs) / rel)
 
 
 def _configured_output_dir(cfg: Dict[str, Any], settings: Optional[Dict[str, Any]] = None) -> Optional[Path]:
@@ -225,14 +228,27 @@ def _place_in_output_dir(
     cfg: Dict[str, Any],
     old_path: str = "",
     settings: Optional[Dict[str, Any]] = None,
+    media_tag: Optional[Dict[str, Any]] = None,
+    old_tag: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Put ``desired``'s basename in the configured output dir, else keep ``old_path``'s dir."""
+    """Put ``desired``'s basename in the configured output dir, else keep ``old_path``'s dir.
+
+    ``media_tag`` — set when ``desired`` is library-named from it — brings the
+    template's subfolders ("/" in the template) along under that dir;
+    ``old_tag`` is the tag ``old_path`` was named from (defaults to ``media_tag``).
+    """
+    rel = Path(*name_subdirs(media_tag), Path(desired).name) if media_tag else Path(Path(desired).name)
     out_dir = _configured_output_dir(cfg, settings)
     if out_dir is not None:
-        return str(out_dir / Path(desired).name)
+        return str(out_dir / rel)
     if old_path:
-        return _keep_output_dir(old_path, desired)
+        return _keep_output_dir(old_path, rel, name_subdirs(old_tag if old_tag is not None else media_tag))
     return str(desired)
+
+
+def _library_tag(cfg: Dict[str, Any], media_tag: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """``media_tag`` when default_output_path names the job's output from it, else None."""
+    return media_tag if (_uses_library_name(cfg) and media_tag) else None
 
 
 def _fmt_duration(seconds: Any) -> str:
@@ -331,17 +347,20 @@ def _container_title(fmt: Optional[Dict[str, Any]]) -> str:
     return ""
 
 
+def _uses_library_name(cfg: Dict[str, Any]) -> bool:
+    """Library naming (templates) vs <source>_av1_boost for this job."""
+    use_library = (cfg or {}).get("autoname_output")
+    if use_library is None:
+        use_library = load_settings().get("autoname_output", True)
+    return bool(use_library)
+
+
 def default_output_path(input_path: str, config: Optional[Dict[str, Any]] = None,
                         media_tag: Optional[Dict[str, Any]] = None) -> str:
     """Build the usual output filename next to the source (test vs full encode)."""
     inp = Path(input_path)
     cfg = config or {}
-    settings = load_settings()
-    use_library = cfg.get("autoname_output")
-    if use_library is None:
-        use_library = settings.get("autoname_output", True)
-
-    if use_library and media_tag:
+    if _uses_library_name(cfg) and media_tag:
         return library_output_path(inp, media_tag, config=cfg)
 
     ext = "webm" if str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower() == "webm" else "mp4"
@@ -604,6 +623,7 @@ class QueueManager:
         # When Output folder path is set (Watch settings), every job — manual or
         # watch — lands there. Blank + watch job → watch\encoded; blank + manual
         # → next to the source. Watch auto-queue On/Off does not change this.
+        explicit_output = bool(output_path)
         if not output_path:
             output_path = default_output_path(str(inp), default_config, media_tag)
         use_library_in_out = (
@@ -611,11 +631,15 @@ class QueueManager:
             and default_config.get("autoname_output")
             and media_tag
         )
+        # An explicit output path's name isn't the template's, so no subfolders
+        library_named = use_library_in_out or (not explicit_output and _library_tag(default_config, media_tag))
         output_path = _place_in_output_dir(
             library_output_path(inp, media_tag, config=default_config) if use_library_in_out else output_path,
             cfg=default_config,
             old_path=str(output_path),
             settings=settings,
+            media_tag=media_tag if library_named else None,
+            old_tag=media_tag if not explicit_output else {},
         )
 
         job = {
@@ -707,7 +731,8 @@ class QueueManager:
             cfg.update(updates)
             job["config"] = cfg
 
-            tag = dict(job.get("media_tag") or {})
+            old_tag = job.get("media_tag") or {}
+            tag = dict(old_tag)
             if media_tag_updates:
                 for k, v in media_tag_updates.items():
                     if v is None and k in ("year", "imdb_id", "tmdb_id", "note"):
@@ -737,7 +762,8 @@ class QueueManager:
                 job["media_tag"] = tag
                 desired = default_output_path(job["input_path"], cfg, tag)
                 desired = _place_in_output_dir(
-                    desired, cfg=cfg, old_path=job.get("output_path") or ""
+                    desired, cfg=cfg, old_path=job.get("output_path") or "",
+                    media_tag=_library_tag(cfg, tag), old_tag=old_tag,
                 )
                 reserved = self._reserved_output_paths(exclude_job_id=job_id)
                 job["output_path"] = str(
@@ -804,7 +830,8 @@ class QueueManager:
         job["config"] = cfg
 
         if any(k in changes for k in self._NAMING_PIPELINE_KEYS):
-            tag = dict(job.get("media_tag") or {})
+            old_tag = job.get("media_tag") or {}
+            tag = dict(old_tag)
             job_settings = dict(load_settings())
             for k in ("name_template_movie", "name_template_episode"):
                 if cfg.get(k):
@@ -821,7 +848,9 @@ class QueueManager:
             old_path = job.get("output_path") or ""
             reserved.discard(_resolved_str(old_path))
             desired = default_output_path(job["input_path"], cfg, tag)
-            desired = _place_in_output_dir(desired, cfg=cfg, old_path=old_path)
+            desired = _place_in_output_dir(
+                desired, cfg=cfg, old_path=old_path, media_tag=_library_tag(cfg, tag), old_tag=old_tag
+            )
             new_path = str(allocate_unique_output_path(desired, reserved=reserved))
             job["output_path"] = new_path
             reserved.add(_resolved_str(new_path))
@@ -1470,6 +1499,13 @@ class QueueManager:
         except Exception as e:
             partial.unlink(missing_ok=True)
             raise RuntimeError(f"Could not publish HandBrake output to {out_path}: {e}") from e
+        if partial.parent != out_path.parent:
+            # The HDR re-label moved it out of the template folder made for the
+            # predicted name — drop that folder if nothing else is in it
+            try:
+                partial.parent.rmdir()
+            except OSError:
+                pass
         append_log(
             f"Published final: {out_path.name} (verify + publish {_fmt_duration(self._active_clock() - t_verify)})",
             update_stage=False,
@@ -1519,13 +1555,17 @@ class QueueManager:
                 default_output_path(job["input_path"], cfg, new_tag),
                 cfg=cfg,
                 old_path=str(out_path),
+                media_tag=new_tag,
+                old_tag=tag,
             )
         )
-        if desired.stem == predicted.stem:
+        if desired.stem == predicted.stem and desired.parent == out_path.parent:
             return out_path  # the template has no [hdr] token
         with self._lock:
             reserved = self._reserved_output_paths(exclude_job_id=job_id)
         new_path = Path(allocate_unique_output_path(desired, reserved=reserved))
+        # [hdr] in a template subfolder moves the file to another folder
+        new_path.parent.mkdir(parents=True, exist_ok=True)
         append_log(
             f"Output HDR is {actual_hdr or 'SDR'} (named {expected or 'SDR'} at queue time) "
             f"— naming it {new_path.name}",

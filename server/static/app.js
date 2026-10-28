@@ -49,10 +49,14 @@ document.addEventListener("DOMContentLoaded", () => {
       );
       out = out.replace(tokenRe, (_, key) => values[key] || "");
     }
-    out = out.replace(/\(\s*\)/g, "").replace(/\[\s*\]/g, "");
-    out = out.replace(/\[\s+/g, "[").replace(/\s+\]/g, "]"); // "[[resolution] [hdr]]" for SDR
-    out = out.replace(/(?:\s*-\s*){2,}/g, " - ").replace(/\s{2,}/g, " ");
-    out = out.replace(/^[\s.\-]+|[\s.\-]+$/g, "");
+    // "/" (or "\") makes subfolders; each part is tidied, empty parts dropped
+    out = out.split(/[\\/]/).map((part) => {
+      let p = part.replace(/[<>:"|?*\x00-\x1f]/g, "");
+      p = p.replace(/\(\s*\)/g, "").replace(/\[\s*\]/g, "");
+      p = p.replace(/\[\s+/g, "[").replace(/\s+\]/g, "]"); // "[[resolution] [hdr]]" for SDR
+      p = p.replace(/(?:\s*-\s*){2,}/g, " - ").replace(/\s{2,}/g, " ");
+      return p.replace(/^[\s.\-]+|[\s.\-]+$/g, "");
+    }).filter(Boolean).join("/");
     const ext = String((values && values.ext) || "mp4").replace(/^\./, "");
     for (const known of ["mp4", "webm", "mkv", "m4v", "mov"]) {
       if (out.toLowerCase().endsWith("." + known)) {
