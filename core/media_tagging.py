@@ -795,6 +795,28 @@ def _tmdb_find_movie_uncached(title: str, year: Optional[int], key: str) -> Opti
     }
 
 
+def tmdb_movie_by_imdb(imdb_id: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """TMDB movie for an IMDb id → {title, year, imdb_id, tmdb_id} or None (no
+    match). Raises _TmdbUnavailable when TMDB can't be reached."""
+    iid = parse_imdb_id(str(imdb_id or ""))
+    key = (api_key or "").strip()
+    if not iid or not key:
+        return None
+    data = _tmdb_get(f"/find/{iid}", key, {"external_source": "imdb_id", "language": "en-US"})
+    results = list((data or {}).get("movie_results") or [])
+    if not results:
+        return None
+    pick = results[0]
+    release = str(pick.get("release_date") or "")
+    return {
+        "title": str(pick.get("title") or "").strip() or None,
+        "year": int(release[:4]) if re.match(r"^(?:19|20)\d{2}", release) else None,
+        "imdb_id": iid,
+        "tmdb_id": int(pick["id"]) if pick.get("id") else None,
+        "source": "tmdb",
+    }
+
+
 def build_media_tag(
     input_path: Path,
     *,
