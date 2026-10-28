@@ -3223,6 +3223,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // --- System Stats Poller ---
   const pipelineCpuCores = document.getElementById("pipelineCpuCores");
+  const pipelineGpuName = document.getElementById("pipelineGpuName");
 
   async function pollSystemStats() {
     try {
@@ -3234,6 +3235,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (data.gpu) {
         gpuVal.textContent = `${Math.round(data.gpu.utilization)}%`;
         gpuBar.style.width = `${data.gpu.utilization}%`;
+      }
+      if (pipelineGpuName) {
+        // nvidia-smi's name ("NVIDIA GeForce RTX 3060") — none = no CUDA (Vship)
+        pipelineGpuName.textContent = data.gpu?.name
+          ? `${String(data.gpu.name).replace(/^NVIDIA\s+(GeForce\s+)?/i, "")} (CUDA)`
+          : "None (CPU only)";
       }
 
       ramVal.textContent = `${data.ram_used_gb} GB`;
