@@ -107,6 +107,16 @@ document.addEventListener("DOMContentLoaded", () => {
     return String((hints || {}).resolution || "");
   }
 
+  /** True when the preset targets a higher resolution than the source has — a
+   *  2160p preset on a 1080p file (never upscaled, so the output stays 1080p). */
+  function presetExceedsSource(target, video) {
+    let t = String(target || "source").trim().toLowerCase();
+    if (t === "4k" || t === "uhd") t = "2160p";
+    if (!RESOLUTION_BOXES[t] || t === "source") return false;
+    if (!(Number(video?.width) && Number(video?.height))) return false;
+    return resolutionFromTarget(t, video) !== t;
+  }
+
   const AUDIO_LANGS_KEY = "av1queue_audio_languages";
   const AUDIO_BEST_ONLY_KEY = "av1queue_audio_best_only";
   const AUDIO_FORMAT_KEY = "av1queue_audio_format";
@@ -3056,9 +3066,13 @@ document.addEventListener("DOMContentLoaded", () => {
             ${statusBadge}
             ${presetBadge}
             ${year ? `<span class="q-status-badge q-tag-badge">${escapeHtml(year)}</span>` : ""}
-            ${quality ? `<span class="q-status-badge q-tag-badge">${escapeHtml(quality)}</span>` : ""}
-            ${imdb
-              ? `<span class="q-status-badge q-imdb-badge" title="IMDb">${escapeHtml(imdb)}</span>`
+            ${quality ? (presetExceedsSource(job.config?.resolution_target, job.media_info?.video)
+              ? `<span class="q-status-badge q-tag-warn" title="${escapeHtml(`Preset targets ${job.config.resolution_target} but the source is only ${resolutionLabel(Number(job.media_info.video.width), Number(job.media_info.video.height))} — it won't be upscaled; pick a preset for this resolution`)}">${escapeHtml(quality)}</span>`
+              : `<span class="q-status-badge q-tag-badge">${escapeHtml(quality)}</span>`) : ""}
+            ${(imdb && tag.tmdb_pending)
+              ? `<span class="q-status-badge q-imdb-badge is-loading" title="Looking up the title on TMDB…"><span class="q-badge-spinner" aria-hidden="true"></span>${escapeHtml(imdb)}</span>`
+              : imdb
+              ? `<span class="q-status-badge q-imdb-badge" title="${escapeHtml(tag.lookup_note || "IMDb")}">${escapeHtml(imdb)}</span>`
               : `<span class="q-status-badge q-tag-warn" title="${escapeHtml(tag.lookup_note || "No IMDb ID")}">no IMDb</span>`}
             ${(!imdb && tagSource === "tmdb") ? `<span class="q-status-badge q-tag-badge">TMDB</span>` : ""}
             ${audioLangBadges}

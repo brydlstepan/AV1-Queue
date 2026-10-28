@@ -32,7 +32,7 @@ from core.app_settings import (
 )
 from core.media_tagging import (
     build_media_tag, library_output_path, name_subdirs, output_hdr_label, refresh_media_tag_quality,
-    strip_name_subdirs, test_name_tag,
+    strip_name_subdirs, test_name_tag, title_to_dots, tmdb_movie_by_imdb,
 )
 from core.subtitle_extract import select_default_subtitle_indices
 from core.subtitle_search import search_and_download_missing
@@ -389,6 +389,13 @@ class QueueManager:
         self._paused_since: Optional[float] = None
         self.load_queue()
         self._recover_interrupted_jobs()
+        # An Edit Job IMDb → TMDB lookup cut off by a restart: run it again
+        for j in self.jobs:
+            tag = j.get("media_tag") or {}
+            if tag.get("tmdb_pending") and tag.get("imdb_id"):
+                threading.Thread(
+                    target=self._resolve_imdb_title, args=(j["id"], tag["imdb_id"]), daemon=True
+                ).start()
 
     def add_listener(self, callback):
         self._listeners.append(callback)
@@ -733,6 +740,7 @@ class QueueManager:
 
             old_tag = job.get("media_tag") or {}
             tag = dict(old_tag)
+            resolve_imdb = None
             if media_tag_updates:
                 for k, v in media_tag_updates.items():
                     if v is None and k in ("year", "imdb_id", "tmdb_id", "note"):
@@ -741,38 +749,88 @@ class QueueManager:
                         tag[k] = v
                 tag["verified"] = True
                 tag["source"] = "manual"
+                # A newly entered IMDb id: title / year follow it from TMDB
+                # (background — the card shows the lookup until it lands)
+                new_imdb = tag.get("imdb_id")
+                if (
+                    new_imdb and new_imdb != old_tag.get("imdb_id")
+                    and (tag.get("media_kind") or "movie") == "movie"
+                    and str(load_settings().get("tmdb_api_key") or "").strip()
+                ):
+                    resolve_imdb = new_imdb
+                tag["tmdb_pending"] = bool(resolve_imdb)
 
             # Refresh quality label when preset resolution / container / title fields change
             refresh_keys = ("test_mode", "trim_start", "trim_end", "container", "autoname_output", "resolution_target", "preset_id")
             if media_tag_updates or any(k in (config_updates or {}) for k in refresh_keys):
-                video = (job.get("media_info") or {}).get("video")
-                hdr_info = (job.get("media_info") or {}).get("hdr")
-                # Render with the templates this job snapshotted at add time, so
-                # a later change to the global template doesn't retroactively
-                # rename jobs already sitting in the queue.
-                job_settings = self._naming_settings(cfg)
-                tag = refresh_media_tag_quality(
-                    tag,
-                    video=video,
-                    hdr_info=hdr_info,
-                    resolution_target=cfg.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
-                    container=cfg.get("container") or JOB_CONFIG_DEFAULTS["container"],
-                    settings=job_settings,
-                )
-                job["media_tag"] = tag
-                desired = default_output_path(job["input_path"], cfg, tag)
-                desired = _place_in_output_dir(
-                    desired, cfg=cfg, old_path=job.get("output_path") or "",
-                    media_tag=_library_tag(cfg, tag), old_tag=old_tag,
-                )
-                reserved = self._reserved_output_paths(exclude_job_id=job_id)
-                job["output_path"] = str(
-                    allocate_unique_output_path(desired, reserved=reserved)
-                )
+                self._rename_queued_job(job, cfg, tag, old_tag)
 
         self.save_queue()
         self.emit_event("job_update", job)
+        if resolve_imdb:
+            threading.Thread(
+                target=self._resolve_imdb_title, args=(job_id, resolve_imdb),
+                name=f"tmdb-{resolve_imdb}", daemon=True,
+            ).start()
         return job
+
+    def _rename_queued_job(
+        self, job: Dict[str, Any], cfg: Dict[str, Any], tag: Dict[str, Any], old_tag: Dict[str, Any]
+    ) -> None:
+        """Re-render the library name from ``tag`` and move the output path to
+        match. Caller holds self._lock."""
+        mi = job.get("media_info") or {}
+        # Render with the templates this job snapshotted at add time, so
+        # a later change to the global template doesn't retroactively
+        # rename jobs already sitting in the queue.
+        tag = refresh_media_tag_quality(
+            tag,
+            video=mi.get("video"),
+            hdr_info=mi.get("hdr"),
+            resolution_target=cfg.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
+            container=cfg.get("container") or JOB_CONFIG_DEFAULTS["container"],
+            settings=self._naming_settings(cfg),
+        )
+        job["media_tag"] = tag
+        desired = default_output_path(job["input_path"], cfg, tag)
+        desired = _place_in_output_dir(
+            desired, cfg=cfg, old_path=job.get("output_path") or "",
+            media_tag=_library_tag(cfg, tag), old_tag=old_tag,
+        )
+        reserved = self._reserved_output_paths(exclude_job_id=job["id"])
+        job["output_path"] = str(allocate_unique_output_path(desired, reserved=reserved))
+
+    def _resolve_imdb_title(self, job_id: str, imdb_id: str) -> None:
+        """Fill title / year from TMDB for an IMDb id entered in Edit Job, then
+        rename the job. Only a still-queued job with that same id is touched."""
+        api_key = str(load_settings().get("tmdb_api_key") or "").strip()
+        try:
+            found = tmdb_movie_by_imdb(imdb_id, api_key)
+            note = "" if found else f"No TMDB movie for {imdb_id}"
+        except Exception as e:
+            found, note = None, f"TMDB lookup for {imdb_id} failed: {e}"
+        with self._lock:
+            job = next((j for j in self.jobs if j["id"] == job_id), None)
+            old_tag = (job or {}).get("media_tag") or {}
+            # A later edit changed the id (it started its own lookup) — not ours
+            if not job or old_tag.get("imdb_id") != imdb_id:
+                return
+            tag = dict(old_tag)
+            tag["tmdb_pending"] = False
+            tag["lookup_note"] = note
+            if found and job.get("status") == JobStatus.QUEUED:
+                tag["title"] = found.get("title") or tag.get("title")
+                tag["title_dots"] = title_to_dots(tag["title"] or "")
+                if found.get("year"):
+                    tag["year"] = found["year"]
+                tag["tmdb_id"] = found.get("tmdb_id")
+                self._rename_queued_job(job, dict(job.get("config") or {}), tag, old_tag)
+            else:
+                job["media_tag"] = tag
+        if note:
+            print(f"[tmdb] {note}")
+        self.save_queue()
+        self.emit_event("job_update", job)
 
     def mark_preset_stale(self, preset_id: str) -> int:
         """Flag QUEUED jobs that still snapshot an older version of this preset."""

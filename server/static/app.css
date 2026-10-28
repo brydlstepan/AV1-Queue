@@ -982,6 +982,17 @@ body {
   color: #fff;
 }
 .q-imdb-badge { background: rgba(245, 197, 24, 0.14); color: #f5c518; }
+/* Edit Job IMDb id → TMDB title lookup still running */
+.q-imdb-badge.is-loading { gap: 6px; opacity: 0.85; }
+.q-badge-spinner {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: q-badge-spin 0.8s linear infinite;
+}
+@keyframes q-badge-spin { to { transform: rotate(360deg); } }
 .q-tag-badge { background: var(--bg-chip); color: var(--text-muted); }
 .q-lang-badge { background: rgba(34, 197, 94, 0.16); color: #4ade80; }
 .q-lang-badge.is-on { background: rgba(34, 197, 94, 0.16); color: #4ade80; }
