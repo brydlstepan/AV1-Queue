@@ -28,7 +28,7 @@ from core.handbrake_encode import (
 from core.hdr_dovi import svt_chroma_position
 from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audio_format
 from core.app_settings import (
-    load_settings, save_settings, get_pipeline_settings, JOB_CONFIG_DEFAULTS,
+    load_settings, save_settings, get_pipeline_settings, get_queued_job_settings, default_setting, JOB_CONFIG_DEFAULTS,
 )
 from core.media_tagging import (
     build_media_tag, library_output_path, name_subdirs, output_hdr_label, refresh_media_tag_quality,
@@ -780,9 +780,6 @@ class QueueManager:
         """Re-render the library name from ``tag`` and move the output path to
         match. Caller holds self._lock."""
         mi = job.get("media_info") or {}
-        # Render with the templates this job snapshotted at add time, so
-        # a later change to the global template doesn't retroactively
-        # rename jobs already sitting in the queue.
         tag = refresh_media_tag_quality(
             tag,
             video=mi.get("video"),
@@ -856,8 +853,12 @@ class QueueManager:
             self.emit_event("job_update", job)
         return len(touched)
 
-    # Pipeline keys that change the output filename (extension / test suffix)
-    _NAMING_PIPELINE_KEYS = ("container", "test_mode", "trim_start", "trim_end")
+    # Keys that change the output filename (extension / test suffix / naming)
+    _NAMING_PIPELINE_KEYS = (
+        "container", "test_mode", "trim_start", "trim_end",
+        "autoname_output", "name_template_movie", "name_template_episode",
+        "preserve_dovi_rpu",  # DoVi vs HDR10 in [hdr]
+    )
 
     def _stamp_pipeline_settings(
         self, job: Dict[str, Any], overrides: Dict[str, Any], reserved: Set[str]
@@ -868,9 +869,11 @@ class QueueManager:
         Returns {key: (old, new)} for what actually changed — {} if nothing did.
 
         A job only permanently keeps its preset and per-job picks; these keys
-        follow the current Pipeline / Test Mode settings. When a change alters
-        the output name (container, test range) the filename is rebuilt in the
-        same folder the job already writes to.
+        follow the current Pipeline / Test Mode / Naming settings. When a change
+        alters the output name (container, test range, name template) the
+        filename is rebuilt in the folder the job already writes to. Audio /
+        subtitle track picks the job never changed by hand (still what the old
+        languages / kinds would pick) are re-picked for the new ones.
         """
         cfg = dict(job.get("config") or {})
 
@@ -878,29 +881,53 @@ class QueueManager:
             # A key the job never stored behaves as its default — not a change
             val = cfg.get(key)
             if val is None:
-                val = "auto" if key == "ssimu2" else JOB_CONFIG_DEFAULTS.get(key)
+                if key == "ssimu2":
+                    val = "auto"
+                elif key in JOB_CONFIG_DEFAULTS:
+                    val = JOB_CONFIG_DEFAULTS[key]
+                else:
+                    val = default_setting(key)
             return val
 
         changes = {k: (current(k), v) for k, v in overrides.items() if current(k) != v}
         if not changes:
             return {}
+
+        mi = job.get("media_info") or {}
+        if any(k in changes for k in ("audio_languages", "audio_best_only")):
+            audio = mi.get("audio_tracks") or []
+
+            def audio_pick(c: Dict[str, Any]) -> List[int]:
+                return list(self.pipeline.select_default_audio_indices(
+                    audio, languages=c.get("audio_languages"),
+                    best_only=c.get("audio_best_only", JOB_CONFIG_DEFAULTS["audio_best_only"]),
+                ))
+
+            if set(cfg.get("audio_tracks_order") or []) == set(audio_pick(cfg)):
+                cfg["audio_tracks_order"] = audio_pick({**cfg, **overrides})
+        if any(k in changes for k in ("subtitle_languages", "subtitle_kinds")):
+            subs = mi.get("subtitle_tracks") or []
+
+            def sub_pick(c: Dict[str, Any]) -> List[int]:
+                return list(select_default_subtitle_indices(
+                    subs, languages=c.get("subtitle_languages"), kinds=c.get("subtitle_kinds"),
+                ))
+
+            if set(cfg.get("subtitle_tracks") or []) == set(sub_pick(cfg)):
+                cfg["subtitle_tracks"] = sub_pick({**cfg, **overrides})
+
         cfg.update(overrides)
         job["config"] = cfg
 
         if any(k in changes for k in self._NAMING_PIPELINE_KEYS):
             old_tag = job.get("media_tag") or {}
-            tag = dict(old_tag)
-            job_settings = dict(load_settings())
-            for k in ("name_template_movie", "name_template_episode"):
-                if cfg.get(k):
-                    job_settings[k] = cfg[k]
             tag = refresh_media_tag_quality(
-                tag,
+                dict(old_tag),
                 video=(job.get("media_info") or {}).get("video"),
                 hdr_info=(job.get("media_info") or {}).get("hdr"),
                 resolution_target=cfg.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
                 container=cfg.get("container") or JOB_CONFIG_DEFAULTS["container"],
-                settings=job_settings,
+                settings=self._naming_settings(cfg),
             )
             job["media_tag"] = tag
             old_path = job.get("output_path") or ""
@@ -915,8 +942,8 @@ class QueueManager:
         return changes
 
     def apply_pipeline_settings_to_queued(self) -> List[Dict[str, Any]]:
-        """Stamp the saved pipeline settings onto every QUEUED job (on Save / toggle)."""
-        overrides = get_pipeline_settings()
+        """Stamp the saved pipeline + naming settings onto every QUEUED job (on Save / toggle)."""
+        overrides = get_queued_job_settings()
         if not overrides:
             return []
         updated: List[Dict[str, Any]] = []
@@ -948,8 +975,8 @@ class QueueManager:
         return self.apply_pipeline_settings_to_queued()
 
     def _refresh_pipeline_settings_for_start(self, job: Dict[str, Any]) -> Dict[str, Any]:
-        """Re-read the pipeline settings as a job starts. Returns what changed."""
-        overrides = get_pipeline_settings()
+        """Re-read the pipeline + naming settings as a job starts. Returns what changed."""
+        overrides = get_queued_job_settings()
         if not overrides:
             return {}
         with self._lock:
@@ -1367,8 +1394,9 @@ class QueueManager:
     @staticmethod
     def _naming_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
         """
-        App settings with the job's naming templates overlaid, so a later change to the global naming settings doesn't
-        retroactively rename jobs already in the queue.
+        App settings with the job's naming templates overlaid. A queued job's
+        templates follow Settings → Naming (stamped on save and at job start);
+        the copy in its config is what it was last named with.
         """
         settings = dict(load_settings())
         for k in ("name_template_movie", "name_template_episode"):
@@ -1773,7 +1801,10 @@ class QueueManager:
             if pipeline_changes:
                 append_log(
                     "Pipeline settings applied at start: "
-                    + ", ".join(f"{k} {old} → {new}" for k, (old, new) in pipeline_changes.items()),
+                    + ", ".join(
+                        f"{k} {old} → {new}" if len(f"{old}{new}") <= 60 else f"{k} changed"
+                        for k, (old, new) in pipeline_changes.items()
+                    ),
                     update_stage=False,
                 )
 

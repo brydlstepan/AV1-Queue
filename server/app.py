@@ -29,7 +29,7 @@ STATIC_DIR = BASE_DIR / "server" / "static"
 sys.path.insert(0, str(BASE_DIR))
 from core.queue_manager import QueueManager
 from core.pipeline import normalize_audio_format
-from core.app_settings import load_settings, save_settings
+from core.app_settings import JOB_SETTING_KEYS, load_settings, save_settings
 from core.presets_store import (
     delete_preset_file,
     load_presets,
@@ -720,7 +720,9 @@ async def update_settings(req: SettingsUpdateRequest):
         raise HTTPException(status_code=400, detail=str(e))
     if any(k.startswith("watch_folder_") for k in updates):
         _restart_watch_service()
-    if "pipeline" in updates:
+    if "pipeline" in updates or any(k in updates for k in JOB_SETTING_KEYS):
+        # Queued jobs follow the pipeline / naming settings (renamed if needed);
+        # a running encode keeps what it started with
         queue_mgr.apply_pipeline_settings_to_queued()
     return {"status": "ok", "settings": _public_settings(data)}
 
