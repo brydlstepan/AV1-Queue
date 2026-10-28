@@ -921,7 +921,7 @@ Default: PSNR</span>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateMovie" title="Reset to default template" aria-label="Reset to default">↺</button>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="globalNameTemplateMovie" class="form-input pipeline-field" data-default="[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]" spellcheck="false">
+                  <input type="text" id="globalNameTemplateMovie" class="form-input pipeline-field" data-default="[name] ([year]) [imdbid-[imdbid]]/[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]" spellcheck="false">
                 </div>
               </div>
               <div class="setting-row setting-row--stack" data-pipeline-key="nameTemplateEpisode">
@@ -936,7 +936,7 @@ Default: PSNR</span>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateEpisode" title="Reset to default template" aria-label="Reset to default">↺</button>
                 </div>
                 <div class="setting-control">
-                  <input type="text" id="globalNameTemplateEpisode" class="form-input pipeline-field" data-default="[show] - S[season]E[episode] - [epname] - [[resolution]] [note]" spellcheck="false">
+                  <input type="text" id="globalNameTemplateEpisode" class="form-input pipeline-field" data-default="[show] ([year]) [imdbid-[imdbid]]/Season [season]/[show] - S[season]E[episode] - [[resolution]] [note]" spellcheck="false">
                 </div>
               </div>
               <p class="pipeline-settings-note naming-tokens-note">

@@ -20,8 +20,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const BROWSE_FAVORITES_KEY = "av1queue_browse_favorites";
   const SVT_LP_KEY = "av1queue_svt_lp";
   const SVT_LOW_MEMORY_KEY = "av1queue_svt_low_memory";
-  const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]";
-  const DEFAULT_NAME_TEMPLATE_EPISODE = "[show] - S[season]E[episode] - [epname] - [[resolution]] [note]";
+  const DEFAULT_NAME_TEMPLATE_MOVIE = "[name] ([year]) [imdbid-[imdbid]]/[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]";
+  const DEFAULT_NAME_TEMPLATE_EPISODE = "[show] ([year]) [imdbid-[imdbid]]/Season [season]/[show] - S[season]E[episode] - [[resolution]] [note]";
 
   function stripExtToken(tpl) {
     return String(tpl || "").replace(/\.?\[ext\]/gi, "").replace(/\s+$/g, "").replace(/\.$/, "");
