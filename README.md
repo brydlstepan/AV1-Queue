@@ -32,14 +32,14 @@ Local **AV1 encoding queue** with a browser UI. Drives [HandBrakeCLI built with 
 | Quality metrics (optional) | **VapourSynth** + **FFMS2**, **vszip** (CPU), **Vship** (NVIDIA GPU) — post-encode SSIMU2 |
 | System metrics | **psutil** |
 
-Python packages (installed into `vs/python-env/` by setup from `requirements.txt`): `fastapi`, `uvicorn[standard]`, `websockets`, `psutil`, `vapoursynth`, `vstools`, `vsjetpack`, `py7zr`, `langcodes`, `guessit`, `watchdog`, …
+Python packages (installed into `vs/python-env/` by setup from `requirements.txt`): `fastapi`, `uvicorn` + `httptools`, `websockets`, `psutil`, `vapoursynth`, `vstools`, `vsjetpack`, `langcodes`, `guessit`, `watchdog`, …
 
 ---
 
 ## Requirements
 
 - **Windows** x64 (scripts and portable VS layout assume this)
-- **Python 3.12, 3.13 or 3.14** (3.13 recommended) for first-time venv creation. Newer versions (3.15+) are refused until every dependency ships Windows wheels for them; without wheels pip has to build `inflate64` / `pybcj` / `pyppmd` (via `py7zr`) and `pyyaml` from source, which needs Microsoft Visual C++. Installing a supported version next to a newer one is enough.
+- **Python 3.12–3.15** (3.13 recommended) for first-time venv creation. Newer versions are refused until every dependency ships Windows wheels for them — without wheels pip builds from source, which needs Microsoft Visual C++. (That's also why `requirements.txt` lists `uvicorn` + `httptools` rather than `uvicorn[standard]`, whose `pyyaml` lagged behind, and has no `py7zr`.) Installing a supported version next to a newer one is enough.
 - Enough disk for temp job folders under `_temp/`
 - **NVIDIA GPU** recommended for Vship-accelerated post-encode SSIMU2 scoring; CPU (vszip) works without it
 
@@ -61,7 +61,7 @@ setup.bat
 .\scripts\setup.ps1
 ```
 
-This runs `scripts/setup_env.py`, which downloads missing binaries and VapourSynth plugins, creates `vs/python-env`, and installs/updates Python deps. Re-run anytime: existing binaries/plugins are left alone (delete them to force a re-download); pip packages are refreshed each run. Python selection: the `py` launcher with `-3.13`, `-3.12`, `-3.14`, then `py -3`, `python`, `python3`. The first supported version (3.12–3.14) wins; if only a newer one is found, setup stops early and names the version to install. A `vs/python-env` left over from an unsupported Python is recreated automatically. The FFMS2 plugin (`.7z`) is extracted with Windows' built-in `tar`, falling back to 7-Zip and then `py7zr`, so a failed pip install doesn't also lose SSIMU2.
+This runs `scripts/setup_env.py`, which downloads missing binaries and VapourSynth plugins, creates `vs/python-env`, and installs/updates Python deps. Re-run anytime: existing binaries/plugins are left alone (delete them to force a re-download); pip packages are refreshed each run. Python selection: the `py` launcher with `-3.13`, `-3.12`, `-3.14`, `-3.15`, then `py -3`, `python`, `python3`. The first supported version (3.12–3.15) wins; if only a newer one is found, setup stops early and names the version to install. A `vs/python-env` left over from an unsupported Python is recreated automatically. The FFMS2 plugin (`.7z`) is extracted with Windows' built-in `tar`, falling back to 7-Zip and then `py7zr` (pip-installed into the venv only for that), so it doesn't depend on the main pip install.
 
 ### 2. Launch the studio
 

@@ -6,10 +6,13 @@ setuptools
 vapoursynth
 vsjetpack  # provides the vstools module (the vstools package is now just an alias for it)
 fastapi
-uvicorn[standard]
+# Not uvicorn[standard]: its pyyaml (log-config files only) has no wheels for
+# new Pythons; httptools + websockets are the parts the server uses.
+# No py7zr either — setup extracts .7z with Windows tar / 7-Zip.
+uvicorn
+httptools
 websockets
 psutil
-py7zr
 langcodes
 guessit
 charset-normalizer
