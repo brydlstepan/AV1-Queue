@@ -483,9 +483,24 @@ def _template_values(
     }
 
 
+def _tidy_name_part(part: str) -> str:
+    """One folder / file name of a rendered template: empty () / [] and dangling
+    separators left by blank tokens dropped, illegal characters removed."""
+    out = _ILLEGAL_FS.sub("", part)
+    out = re.sub(r"\(\s*\)", "", out)
+    out = re.sub(r"\[\s*\]", "", out)
+    out = re.sub(r"\[\s+", "[", out)  # "[[resolution] [hdr]]" for SDR → "[2160p]"
+    out = re.sub(r"\s+\]", "]", out)
+    out = re.sub(r"(?:\s*-\s*){2,}", " - ", out)  # empty token left " - - "
+    out = re.sub(r"\s{2,}", " ", out)
+    return out.strip(" .-")
+
+
 def apply_name_template(template: str, values: Dict[str, str]) -> str:
     """Replace [token] placeholders; strip empty parentheticals/brackets.
 
+    A "/" (or "\\") in the template makes subfolders, relative to the folder the
+    output goes to: ``[name] ([year])/[name] ([year])`` → ``Dune (2021)/Dune (2021).mp4``.
     Extension is always appended from the container setting — not a template token.
     """
     out = template or DEFAULT_MOVIE_TEMPLATE
@@ -503,13 +518,10 @@ def apply_name_template(template: str, values: Dict[str, str]) -> str:
         return values.get(m.group(1), "") or ""
 
     out = token_re.sub(_sub, out)
-    out = re.sub(r"\(\s*\)", "", out)
-    out = re.sub(r"\[\s*\]", "", out)
-    out = re.sub(r"\[\s+", "[", out)  # "[[resolution] [hdr]]" for SDR → "[2160p]"
-    out = re.sub(r"\s+\]", "]", out)
-    out = re.sub(r"(?:\s*-\s*){2,}", " - ", out)  # empty token left " - - "
-    out = re.sub(r"\s{2,}", " ", out)
-    out = out.strip(" .-")
+    # Token values never contain separators (sanitized), so every "/" here is
+    # the template's own. Empty parts — a folder of blank tokens, "..", a
+    # leading "/" — are dropped, so the result is always a relative path.
+    out = "/".join(p for p in (_tidy_name_part(s) for s in re.split(r"[\\/]", out)) if p)
     ext = (values.get("ext") or "mp4").lstrip(".")
     # Always append container extension (never configurable via template)
     stem = Path(out).name
@@ -993,12 +1005,29 @@ def library_output_path(
     """
     cfg = config or {}
     ext = "webm" if str(cfg.get("container", "mp4")).lower() == "webm" else "mp4"
-    base = (media_tag or {}).get("library_name") or f"{input_path.stem}.{ext}"
-    if Path(base).suffix.lower() != f".{ext}":
-        base = f"{Path(base).stem}.{ext}"
+    rel = Path((media_tag or {}).get("library_name") or f"{input_path.stem}.{ext}")
+    if rel.suffix.lower() != f".{ext}":
+        rel = rel.with_name(f"{rel.stem}.{ext}")
     if cfg.get("test_mode"):
-        base = f"{Path(base).stem}.test_{test_name_tag(cfg)}.{ext}"
-    return str(input_path.parent / base)
+        rel = rel.with_name(f"{rel.stem}.test_{test_name_tag(cfg)}.{ext}")
+    # A source already sitting in the template's folder isn't nested in it again
+    return str(strip_name_subdirs(input_path.parent, rel.parent.parts) / rel)
+
+
+def name_subdirs(media_tag: Optional[Dict[str, Any]]) -> Tuple[str, ...]:
+    """Subfolders a "/" in the naming template puts in front of the file name."""
+    return Path((media_tag or {}).get("library_name") or "x").parent.parts
+
+
+def strip_name_subdirs(folder: Path, subdirs: Tuple[str, ...]) -> Path:
+    """``folder`` without a trailing run of ``subdirs`` (case-insensitive) — the
+    folder the template's subfolders are relative to. Unchanged if it doesn't
+    end in them."""
+    n = len(subdirs)
+    parts = Path(folder).parts
+    if n and len(parts) > n and [p.lower() for p in parts[-n:]] == [s.lower() for s in subdirs]:
+        return Path(*parts[:-n])
+    return Path(folder)
 
 
 def test_name_tag(config: Dict[str, Any]) -> str:

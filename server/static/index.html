@@ -915,7 +915,7 @@ Default: PSNR</span>
                     <span class="setting-label-text">Movie filename template</span>
                     <span class="setting-help" tabindex="0" aria-label="Help">
                       <span class="setting-help-icon">?</span>
-                      <span class="setting-help-tip" role="tooltip">Tokens: [name] [year] [imdbid] [resolution] [hdr] [note] [width] [height] [original]. [resolution] is the output resolution (e.g. 2160p). [hdr] is the HDR format the encode carries: DoVi, HDR10plus, DoVi HDR10plus, HLG or HDR10, empty for SDR; it's corrected after the encode to what the output actually has. [note] is the optional Edit Job note (e.g. Extended), blank when unused. Extension (mp4/webm) is appended automatically. Example with HDR: [name] ([year]) [imdbid-[imdbid]] - [[resolution] [hdr]] [note]</span>
+                      <span class="setting-help-tip" role="tooltip">Tokens: [name] [year] [imdbid] [resolution] [hdr] [note] [width] [height] [original]. [resolution] is the output resolution (e.g. 2160p). [hdr] is the HDR format the encode carries: DoVi, HDR10plus, DoVi HDR10plus, HLG or HDR10, empty for SDR; it's corrected after the encode to what the output actually has. [note] is the optional Edit Job note (e.g. Extended), blank when unused. Extension (mp4/webm) is appended automatically. A / makes subfolders under the output folder, e.g. [name] ([year])/[name] ([year]) - [[resolution]]. Example with HDR: [name] ([year]) [imdbid-[imdbid]] - [[resolution] [hdr]] [note]</span>
                     </span>
                   </label>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateMovie" title="Reset to default template" aria-label="Reset to default">↺</button>
@@ -930,7 +930,7 @@ Default: PSNR</span>
                     <span class="setting-label-text">Episode filename template</span>
                     <span class="setting-help" tabindex="0" aria-label="Help">
                       <span class="setting-help-icon">?</span>
-                      <span class="setting-help-tip" role="tooltip">Used when the source looks like a series episode. Extra tokens: [show] [epname] [season] [episode] [sxxexx] [note]. Extension is appended automatically.</span>
+                      <span class="setting-help-tip" role="tooltip">Used when the source looks like a series episode. Extra tokens: [show] [epname] [season] [episode] [sxxexx] [note]. Extension is appended automatically. A / makes subfolders, e.g. [show]/Season [season]/[show] - S[season]E[episode].</span>
                     </span>
                   </label>
                   <button type="button" class="btn-reset-default pipeline-reset" data-target="globalNameTemplateEpisode" title="Reset to default template" aria-label="Reset to default">↺</button>
