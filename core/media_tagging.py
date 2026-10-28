@@ -413,8 +413,8 @@ def title_to_dots(title: str) -> str:
 
 
 
-DEFAULT_MOVIE_TEMPLATE = "[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]"
-DEFAULT_EPISODE_TEMPLATE = "[show] - S[season]E[episode] - [epname] - [[resolution]] [note]"
+DEFAULT_MOVIE_TEMPLATE = "[name] ([year]) [imdbid-[imdbid]]/[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]"
+DEFAULT_EPISODE_TEMPLATE = "[show] ([year]) [imdbid-[imdbid]]/Season [season]/[show] - S[season]E[episode] - [[resolution]] [note]"
 
 _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 

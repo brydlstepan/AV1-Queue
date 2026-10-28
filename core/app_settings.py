@@ -30,8 +30,8 @@ def _ensure_settings_path() -> Path:
 
 _DEFAULTS: Dict[str, Any] = {
     "autoname_output": True,
-    "name_template_movie": "[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]",
-    "name_template_episode": "[show] - S[season]E[episode] - [epname] - [[resolution]] [note]",
+    "name_template_movie": "[name] ([year]) [imdbid-[imdbid]]/[name] ([year]) [imdbid-[imdbid]] - [[resolution]] [note]",
+    "name_template_episode": "[show] ([year]) [imdbid-[imdbid]]/Season [season]/[show] - S[season]E[episode] - [[resolution]] [note]",
     "svt_lp": 0,
     "svt_low_memory": False,
     "ssimu2_target": 80.0,
