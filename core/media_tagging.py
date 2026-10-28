@@ -795,6 +795,61 @@ def _tmdb_find_movie_uncached(title: str, year: Optional[int], key: str) -> Opti
     }
 
 
+_tmdb_tv_cache: Dict[Tuple[str, Optional[int], str], Optional[Dict[str, Any]]] = {}
+
+
+def tmdb_find_tv(show: str, year: Optional[int], api_key: str) -> Optional[Dict[str, Any]]:
+    """Search TMDB for a series → {title, year, imdb_id, tmdb_id} of the show
+    (never an episode — the id names the show folder) or None. Memoized like
+    tmdb_find_movie, so a season's worth of episodes costs one lookup."""
+    key = (api_key or "").strip()
+    if not key or not show:
+        return None
+    cache_key = (show.strip().lower(), year, key)
+    with _tmdb_cache_lock:
+        if cache_key in _tmdb_tv_cache:
+            return _tmdb_tv_cache[cache_key]
+    try:
+        result = _tmdb_find_tv_uncached(show, year, key)
+    except _TmdbUnavailable as e:
+        print(f"[tmdb] Show lookup for '{show}' failed: {e}")
+        return None
+    with _tmdb_cache_lock:
+        _tmdb_tv_cache[cache_key] = result
+    return result
+
+
+def _tmdb_find_tv_uncached(show: str, year: Optional[int], key: str) -> Optional[Dict[str, Any]]:
+    def search(y: Optional[int]) -> List[Dict[str, Any]]:
+        params = {"query": show, "include_adult": "false", "language": "en-US"}
+        if y:
+            params["first_air_date_year"] = str(int(y))
+        return list((_tmdb_get("/search/tv", key, params) or {}).get("results") or [])
+
+    # The year in an episode name is usually the show's start ("The.Office.US.2005")
+    results = search(year) or (search(None) if year else [])
+    if not results:
+        return None
+
+    def rank(r: Dict[str, Any]) -> tuple:
+        fy = str(r.get("first_air_date") or "")[:4]
+        return (1 if year and fy == str(year) else 0, _title_score(show, str(r.get("name") or "")),
+                float(r.get("popularity") or 0))
+
+    pick = sorted(results, key=rank, reverse=True)[0]
+    if not pick.get("id"):
+        return None
+    ext = _tmdb_get(f"/tv/{int(pick['id'])}/external_ids", key) or {}
+    first = str(pick.get("first_air_date") or "")
+    return {
+        "title": str(pick.get("name") or show).strip() or show,
+        "year": int(first[:4]) if re.match(r"^(?:19|20)\d{2}", first) else year,
+        "imdb_id": parse_imdb_id(str(ext.get("imdb_id") or "")),
+        "tmdb_id": int(pick["id"]),
+        "source": "tmdb",
+    }
+
+
 def tmdb_movie_by_imdb(imdb_id: str, api_key: str) -> Optional[Dict[str, Any]]:
     """TMDB movie for an IMDb id → {title, year, imdb_id, tmdb_id} or None (no
     match). Raises _TmdbUnavailable when TMDB can't be reached."""
@@ -879,6 +934,31 @@ def build_media_tag(
             else:
                 lookup_note = f"No TMDB match for '{parsed['title']}'" + (
                     f" ({parsed['year']})" if parsed.get("year") else ""
+                )
+    elif settings.get("tmdb_lookup", True) and not parsed.get("imdb_id") and kind == "episode":
+        # The show's id (a TV search, not a movie one) — names the show folder
+        # and is what the subtitle search sends as the episode's parent
+        api_key = str(settings.get("tmdb_api_key") or "").strip()
+        show_name = str(ep.get("show") or parsed.get("title") or "")
+        show_year = ep.get("year") or parsed.get("year")
+        if not api_key:
+            lookup_note = "Add a TMDB API key in Settings > Naming to resolve IMDb IDs"
+        else:
+            tmdb = tmdb_find_tv(show_name, show_year, api_key)
+            if tmdb:
+                source = "tmdb"
+                ep = dict(ep)
+                ep["show"] = tmdb.get("title") or show_name
+                if tmdb.get("year"):
+                    ep["year"] = tmdb["year"]
+                    parsed["year"] = tmdb["year"]
+                if tmdb.get("imdb_id"):
+                    parsed["imdb_id"] = tmdb["imdb_id"]
+                else:
+                    lookup_note = "TMDB show found but no IMDb id returned"
+            else:
+                lookup_note = f"No TMDB show match for '{show_name}'" + (
+                    f" ({show_year})" if show_year else ""
                 )
 
     res, hdr = quality_parts(
