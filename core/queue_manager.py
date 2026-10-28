@@ -30,7 +30,9 @@ from core.pipeline import TranscodePipeline, frame_rate_to_float, normalize_audi
 from core.app_settings import (
     load_settings, save_settings, get_pipeline_settings, JOB_CONFIG_DEFAULTS,
 )
-from core.media_tagging import build_media_tag, library_output_path, output_hdr_label, refresh_media_tag_quality
+from core.media_tagging import (
+    build_media_tag, library_output_path, output_hdr_label, refresh_media_tag_quality, test_name_tag,
+)
 from core.subtitle_extract import select_default_subtitle_indices
 from core.subtitle_search import search_and_download_missing
 
@@ -344,9 +346,7 @@ def default_output_path(input_path: str, config: Optional[Dict[str, Any]] = None
 
     ext = "webm" if str(cfg.get("container", JOB_CONFIG_DEFAULTS["container"])).lower() == "webm" else "mp4"
     if cfg.get("test_mode"):
-        start_tag = str(cfg.get("trim_start", "start")).replace(":", "")
-        end_tag = str(cfg.get("trim_end", "end")).replace(":", "")
-        return str(inp.parent / f"{inp.stem}_test_{start_tag}-{end_tag}_av1_boost.{ext}")
+        return str(inp.parent / f"{inp.stem}_test_{test_name_tag(cfg)}_av1_boost.{ext}")
     return str(inp.parent / f"{inp.stem}_av1_boost.{ext}")
 
 
