@@ -19,6 +19,12 @@ CORE_DIR = BASE_DIR / "core"
 TEMP_DIR = BASE_DIR / "_temp"
 VENV_DIR = VS_DIR / "python-env"
 
+# Python minors with Windows wheels for every requirement (incl. py7zr's
+# inflate64/pybcj/pyppmd and uvicorn[standard]'s pyyaml) — outside this range
+# pip builds from source and needs MSVC. Keep in sync with setup.ps1 / README.
+SUPPORTED_PYTHON = ((3, 12), (3, 14))
+RECOMMENDED_PYTHON = "3.13"
+
 ERRORS: list[str] = []
 WARNINGS: list[str] = []
 
@@ -76,6 +82,48 @@ def extract_zip(zip_path: Path, dest_dir: Path) -> None:
     fresh_dir(dest_dir)
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(dest_dir)
+
+
+def extract_7z(archive: Path, dest_dir: Path, python_exe: Path) -> bool:
+    """Extract a .7z with whatever is available, so a failed pip install
+    (no py7zr) doesn't also cost the plugins: Windows' own tar (bsdtar reads
+    7z), then 7-Zip, then py7zr from the venv."""
+    import os
+
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    program_files = [os.environ.get(v) for v in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")]
+    seven_zip = shutil.which("7z") or shutil.which("7za") or next(
+        (str(p) for p in (Path(d) / "7-Zip" / "7z.exe" for d in program_files if d) if p.is_file()),
+        None,
+    )
+    # PATH `tar` may be Git's GNU tar, which can't read 7z — use System32's bsdtar.
+    tar_exe = system_root / "System32" / "tar.exe"
+    attempts: list[tuple[str, list[str]]] = []
+    if tar_exe.is_file():
+        attempts.append(("Windows tar", [str(tar_exe), "-xf", str(archive), "-C", str(dest_dir)]))
+    if seven_zip:
+        attempts.append(("7-Zip", [seven_zip, "x", "-y", f"-o{dest_dir}", str(archive)]))
+    if python_exe.exists():
+        code = (
+            "import sys, py7zr\n"
+            "with py7zr.SevenZipFile(sys.argv[1], mode='r') as z:\n"
+            "    z.extractall(sys.argv[2])\n"
+        )
+        attempts.append(("py7zr", [str(python_exe), "-c", code, str(archive), str(dest_dir)]))
+
+    for label, cmd in attempts:
+        print(f"[*] Extracting {archive.name} using {label}...")
+        fresh_dir(dest_dir)
+        try:
+            r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        except OSError as e:
+            print(f"    {label} failed: {e}")
+            continue
+        if r.returncode == 0 and any(dest_dir.iterdir()):
+            return True
+        detail = (r.stderr or "").strip().splitlines()
+        print(f"    {label} failed (exit {r.returncode}){': ' + detail[-1] if detail else ''}")
+    return False
 
 
 def get_latest_github_release(repo: str):
@@ -187,12 +235,51 @@ def setup_binaries() -> None:
             note_error("Could not find FFmpeg essentials_build.zip release asset.")
 
 
+def python_supported(version: tuple[int, int]) -> bool:
+    low, high = SUPPORTED_PYTHON
+    return low <= version <= high
+
+
+def supported_range() -> str:
+    (lo_major, lo_minor), (hi_major, hi_minor) = SUPPORTED_PYTHON
+    return f"{lo_major}.{lo_minor}-{hi_major}.{hi_minor}"
+
+
+def venv_python_version() -> tuple[int, int] | None:
+    """Python version a venv was created with, from its pyvenv.cfg."""
+    cfg = VENV_DIR / "pyvenv.cfg"
+    try:
+        for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() in ("version", "version_info"):
+                parts = value.strip().split(".")
+                return int(parts[0]), int(parts[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def setup_python_environment() -> None:
     print("=" * 60)
     print("STEP 2: Setting up Python Environment & Dependencies")
     print("=" * 60)
 
     python_exe = VENV_DIR / "Scripts" / "python.exe"
+
+    # A venv left by an earlier run with a too-new Python keeps failing pip;
+    # rebuild it with the interpreter running this script (already checked).
+    existing = venv_python_version() if python_exe.exists() else None
+    if existing and not python_supported(existing):
+        found = f"{existing[0]}.{existing[1]}"
+        print(f"[*] {VENV_DIR} was created with unsupported Python {found} — recreating it...")
+        shutil.rmtree(VENV_DIR, ignore_errors=True)
+        if VENV_DIR.exists():
+            note_error(
+                f"Could not remove {VENV_DIR} (Python {found}). Close AV1 Queue "
+                "(tray icon -> Stop Server & Exit), delete that folder and re-run setup.bat."
+            )
+            return
+
     if not python_exe.exists():
         print(f"[*] Creating Python virtual environment in {VENV_DIR}...")
         try:
@@ -281,24 +368,13 @@ def setup_vapoursynth_plugins() -> None:
         dest_7z = TEMP_DIR / "ffms2.7z"
         try:
             download_file(url, dest_7z, "FFMS2")
-            print("[*] Extracting FFMS2 plugin using py7zr...")
-            extract_root = fresh_dir(TEMP_DIR / "ffms2_extracted")
-            extract_code = f"""
-import py7zr, shutil
-from pathlib import Path
-with py7zr.SevenZipFile(r'{dest_7z}', mode='r') as z:
-    z.extractall(r'{extract_root}')
-found = False
-for f in Path(r'{extract_root}').glob('**/x64/ffms2.dll'):
-    shutil.copy2(f, r'{autoload_dir / "ffms2.dll"}')
-    shutil.copy2(f, r'{PLUGINS_DIR / "ffms2.dll"}')
-    print('Installed ffms2.dll!')
-    found = True
-    break
-raise SystemExit(0 if found else 1)
-"""
-            r = subprocess.run([str(python_exe), "-c", extract_code])
-            if r.returncode != 0 or not (autoload_dir / "ffms2.dll").exists():
+            extract_root = TEMP_DIR / "ffms2_extracted"
+            dll = None
+            if extract_7z(dest_7z, extract_root, python_exe):
+                dll = next(extract_root.glob("**/x64/ffms2.dll"), None)
+            if dll:
+                install_plugin(dll, "ffms2.dll")
+            else:
                 note_warning("FFMS2 downloaded but ffms2.dll was not installed — SSIMU2 scoring won't work.")
         except Exception as e:
             note_warning(f"Error installing FFMS2 ({e}) — SSIMU2 scoring won't work.")
@@ -325,6 +401,14 @@ if __name__ == "__main__":
     print("\n============================================================")
     print("   AV1 QUEUE STUDIO INSTALLER")
     print("============================================================\n")
+    # setup.ps1 already picks a supported interpreter; this catches direct runs.
+    if not python_supported(sys.version_info[:2]):
+        print(
+            f"[!] Python {sys.version.split()[0]} is not supported (need {supported_range()}); "
+            f"some packages have no prebuilt wheels for it yet and pip would need MSVC.\n"
+            f"    Install Python {RECOMMENDED_PYTHON} and re-run setup.bat."
+        )
+        sys.exit(1)
     setup_binaries()
     # Python env must run before plugins — autoload dir lives inside vapoursynth site-packages.
     setup_python_environment()

@@ -17,15 +17,32 @@ function Write-Banner {
     Write-Host ""
 }
 
+# Supported Python minor versions: every requirement (and its deps, e.g.
+# py7zr -> inflate64/pybcj/pyppmd, uvicorn[standard] -> pyyaml) must ship a
+# Windows wheel for it, or pip falls back to source builds that need MSVC.
+# Keep in sync with SUPPORTED_PYTHON in setup_env.py and the README.
+$MinPythonMinor = 12
+$MaxPythonMinor = 14
+$RecommendedPython = "3.13"
+
 function Resolve-Python {
-    # Prefer the Windows py launcher so we get a real 3.12+ even when
-    # `python` is the Store stub or an older install.
+    # Prefer the Windows py launcher with explicit supported versions, so a
+    # newer default (`py -3` = 3.15 before its wheels exist) or the Store
+    # `python` stub doesn't win. Unsupported finds are returned too, so the
+    # caller can name them in the error.
     $candidates = @(
+        @{ Cmd = "py"; Args = @("-3.13") },
         @{ Cmd = "py"; Args = @("-3.12") },
+        @{ Cmd = "py"; Args = @("-3.14") },
         @{ Cmd = "py"; Args = @("-3") },
         @{ Cmd = "python"; Args = @() },
         @{ Cmd = "python3"; Args = @() }
     )
+    $unsupported = @()
+
+    # The Python install manager's py.exe can offer to download a missing
+    # version instead of failing; probing should only look at what's installed.
+    $env:PYTHON_MANAGER_AUTOMATIC_INSTALL = "false"
 
     foreach ($c in $candidates) {
         $cmd = Get-Command $c.Cmd -ErrorAction SilentlyContinue
@@ -44,18 +61,21 @@ function Resolve-Python {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
             $patch = [int]$Matches[3]
-            if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 12)) { continue }
-
-            return @{
+            $found = @{
                 Exe     = $c.Cmd
                 Args    = @($c.Args)
                 Version = "$major.$minor.$patch"
             }
+            if ($major -ne 3 -or $minor -lt $MinPythonMinor -or $minor -gt $MaxPythonMinor) {
+                $unsupported += $found
+                continue
+            }
+            return @{ Python = $found; Unsupported = $unsupported }
         } catch {
             continue
         }
     }
-    return $null
+    return @{ Python = $null; Unsupported = $unsupported }
 }
 
 Write-Banner "AV1 QUEUE STUDIO SETUP"
@@ -68,11 +88,21 @@ Write-Host "  3. Install missing VapourSynth plugins (ffms2, vszip, vship)"
 Write-Host "  Existing binaries/plugins are left alone; delete them to force a re-download."
 Write-Host ""
 
-$python = Resolve-Python
+$resolved = Resolve-Python
+$python = $resolved.Python
 if (-not $python) {
-    Write-Host "[ERROR] Python 3.12+ was not found." -ForegroundColor Red
+    $supported = "3.$MinPythonMinor-3.$MaxPythonMinor"
+    $seen = @($resolved.Unsupported | ForEach-Object { $_.Version } | Select-Object -Unique)
+    if ($seen.Count -gt 0) {
+        Write-Host "[ERROR] Only unsupported Python found: $($seen -join ', ') (need $supported)." -ForegroundColor Red
+        Write-Host "  Newer Pythons lack prebuilt wheels for some packages (inflate64, pybcj," -ForegroundColor Yellow
+        Write-Host "  pyppmd, pyyaml); pip would need Microsoft Visual C++ to build them." -ForegroundColor Yellow
+    } else {
+        Write-Host "[ERROR] Python $supported was not found." -ForegroundColor Red
+    }
     Write-Host ""
-    Write-Host "Install from https://www.python.org/downloads/" -ForegroundColor Yellow
+    Write-Host "Install Python $RecommendedPython (it can sit next to other versions):" -ForegroundColor Yellow
+    Write-Host "  https://www.python.org/downloads/  (Python install manager: py install $RecommendedPython)"
     Write-Host "  - Check 'Add python.exe to PATH'"
     Write-Host "  - Prefer the official installer (not only the Microsoft Store stub)"
     Write-Host "Then re-run setup.bat"
