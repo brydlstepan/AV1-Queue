@@ -1,8 +1,8 @@
 {
   "id": "preset_1792686580760",
-  "name": "FHD (noise)",
+  "name": "1080p (noise)",
   "description": "",
-  "crf": 34.0,
+  "crf": 32.0,
   "preset": 3,
   "resolution_target": "1080p",
   "audio_bitrate_51": "320k",

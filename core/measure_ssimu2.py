@@ -17,13 +17,12 @@ def main() -> int:
     parser.add_argument("--encoded", required=True)
     parser.add_argument("--mode", default="auto", choices=["auto", "cpu", "gpu"])
     parser.add_argument("--crop", default="0,0,0,0", help="left,top,right,bottom")
-    parser.add_argument("--target-height", type=int, default=0)
     parser.add_argument("--skip", type=int, default=1, help="Score every Nth frame")
     parser.add_argument("--cache", default="", help="Optional ffms2 cache path for source")
     args = parser.parse_args()
 
     from vstools import vs, core, clip_async_render  # noqa: WPS433 — requires VS env
-    from vs_geometry import apply_crop, resize_to_height
+    from vs_geometry import apply_crop
 
     crop_parts = [int(float(x.strip() or 0)) for x in str(args.crop).split(",")]
     while len(crop_parts) < 4:
@@ -51,10 +50,9 @@ def main() -> int:
 
     source = apply_crop(source, left, top, right, bottom)
 
-    target_height = int(args.target_height or 0)
-    if target_height > 0 and source.height > target_height:
-        source = resize_to_height(source, target_height)
-    elif source.width != encoded.width or source.height != encoded.height:
+    # After HandBrake's crop, scale the source to whatever size the encode came
+    # out at (its resolution-target box), so both compare the same geometry
+    if source.width != encoded.width or source.height != encoded.height:
         source = source.resize.Spline36(width=encoded.width, height=encoded.height)
 
     n_src, n_enc = len(source), len(encoded)

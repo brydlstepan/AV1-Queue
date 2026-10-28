@@ -63,21 +63,43 @@ document.addEventListener("DOMContentLoaded", () => {
     return out ? `${out}.${ext}` : `Unknown.${ext}`;
   }
 
-  /** Mirror core/media_tagging.resolution_from_target (simplified). */
-  function resolutionFromTarget(target, video, hints) {
-    const t = String(target || "source").trim().toLowerCase();
-    if (t === "2160p" || t === "4k" || t === "uhd") return "2160p";
-    if (t === "1440p") return "1440p";
-    if (t === "1080p") return "1080p";
-    if (t === "720p") return "720p";
-    const w = Number((video || {}).width) || 0;
-    const h = Number((video || {}).height) || 0;
+  // Mirrors core/handbrake_encode.RESOLUTION_BOXES: the picture is downscaled to
+  // fit inside the box, keeping its shape (2.40:1 at 1080p → 1920×800).
+  const RESOLUTION_BOXES = { source: [0, 0], "1080p": [1920, 1080], "1440p": [2560, 1440], "2160p": [3840, 2160] };
+
+  /** Mirror core/handbrake_encode.fit_in_box: downscale only, even dimensions. */
+  function fitInBox(w, h, box) {
+    const [bw, bh] = box || [0, 0];
+    if (!(w && h && bw && bh)) return [w, h];
+    const s = Math.min(bw / w, bh / h, 1);
+    if (s >= 1) return [w, h];
+    return [Math.round((w * s) / 2) * 2, Math.round((h * s) / 2) * 2];
+  }
+
+  /** Mirror core/media_tagging.resolution_label (width-led, like Jellyfin / Plex). */
+  function resolutionLabel(w, h) {
     const longEdge = Math.max(w, h);
     const shortEdge = w && h ? Math.min(w, h) : 0;
     if (longEdge >= 3800 || shortEdge >= 2100 || h >= 2160) return "2160p";
+    if (longEdge >= 2500 || h >= 1440) return "1440p";
     if (longEdge >= 1900 || h >= 1080) return "1080p";
     if (longEdge >= 1200 || h >= 720) return "720p";
     if (longEdge > 0) return h ? `${h}p` : `${w}w`;
+    return "";
+  }
+
+  /** Mirror core/media_tagging.resolution_from_target: source size fitted into the target box, labelled. */
+  function resolutionFromTarget(target, video, hints) {
+    let t = String(target || "source").trim().toLowerCase();
+    if (t === "4k" || t === "uhd") t = "2160p";
+    const w = Number((video || {}).width) || 0;
+    const h = Number((video || {}).height) || 0;
+    if (w && h) {
+      const [fw, fh] = fitInBox(w, h, RESOLUTION_BOXES[t] || [0, 0]);
+      const label = resolutionLabel(fw, fh);
+      if (label) return label;
+    }
+    if (["2160p", "1440p", "1080p", "720p"].includes(t)) return t;
     return String((hints || {}).resolution || "");
   }
 
@@ -2162,7 +2184,6 @@ document.addEventListener("DOMContentLoaded", () => {
     updatePresetCommandPreview();
   }
 
-  const RES_HEIGHT_MAP = { source: 0, "1080p": 1080, "1440p": 1440, "2160p": 2160 };
   const presetCommandPreviewBody = document.getElementById("presetCommandPreviewBody");
 
   /** Non-default encode settings as the lines shown in the preset Preview and the encode report. */
@@ -2176,9 +2197,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (Number.isFinite(presetVal) && presetVal !== 3) lines.push(`--preset ${presetVal}`);
 
     const res = resolution || "source";
-    if (res !== "source") {
-      const h = RES_HEIGHT_MAP[res] ?? 0;
-      lines.push(`--target-height ${h}`);
+    if (res !== "source" && RESOLUTION_BOXES[res]) {
+      const [bw, bh] = RESOLUTION_BOXES[res];
+      lines.push(`--maxWidth ${bw} --maxHeight ${bh}  (fit inside, keep shape)`);
     }
 
     const a51 = audio51 || "320k";

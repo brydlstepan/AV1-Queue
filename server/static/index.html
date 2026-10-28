@@ -309,16 +309,16 @@
                   <span class="setting-label-text">Resolution Target</span>
                   <span class="setting-help" tabindex="0" aria-label="Help">
                     <span class="setting-help-icon">?</span>
-                    <span class="setting-help-tip" role="tooltip">Downscale before encode if the source is larger. Source keeps the original height. Also the [resolution] naming token in library filenames (e.g. [2160p]).</span>
+                    <span class="setting-help-tip" role="tooltip">Downscale before encode so the picture fits inside this box, keeping its shape — the way Blu-ray, streaming and HandBrake's own presets define it: a 2.40:1 film is 1920×800 at 1080p and 2560×1066 at 1440p, a 16:9 one 1920×1080 / 2560×1440. Never upscales; Source keeps the original size. Also sets the [resolution] naming token (e.g. [1440p]), labelled from the size the file actually comes out at.</span>
                   </span>
                 </label>
                 <button type="button" class="btn-reset-default basic-reset" data-target="pEditResolution" title="Reset to default (source)" aria-label="Reset to default">↺</button>
                 <div class="setting-control">
                   <select id="pEditResolution" class="form-input basic-field" data-default="source">
                     <option value="source">Source (no resize)</option>
-                    <option value="1080p">1080p (downscale if larger)</option>
-                    <option value="1440p">1440p (downscale if larger)</option>
-                    <option value="2160p">2160p (downscale if larger)</option>
+                    <option value="1080p">1080p (fit in 1920×1080)</option>
+                    <option value="1440p">1440p (fit in 2560×1440)</option>
+                    <option value="2160p">2160p (fit in 3840×2160)</option>
                   </select>
                 </div>
               </div>
@@ -1239,6 +1239,6 @@ Default: PSNR</span>
     </div>
   </div>
 
-  <script src="/static/app.js?v=pass43"></script>
+  <script src="/static/app.js?v=pass44"></script>
 </body>
 </html>
