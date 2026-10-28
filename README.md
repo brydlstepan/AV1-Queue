@@ -39,7 +39,7 @@ Python packages (installed into `vs/python-env/` by setup from `requirements.txt
 ## Requirements
 
 - **Windows** x64 (scripts and portable VS layout assume this)
-- **Python 3.12+** on PATH (for first-time venv creation)
+- **Python 3.12, 3.13 or 3.14** (3.13 recommended) for first-time venv creation. Newer versions (3.15+) are refused until every dependency ships Windows wheels for them; without wheels pip has to build `inflate64` / `pybcj` / `pyppmd` (via `py7zr`) and `pyyaml` from source, which needs Microsoft Visual C++. Installing a supported version next to a newer one is enough.
 - Enough disk for temp job folders under `_temp/`
 - **NVIDIA GPU** recommended for Vship-accelerated post-encode SSIMU2 scoring; CPU (vszip) works without it
 
@@ -61,7 +61,7 @@ setup.bat
 .\scripts\setup.ps1
 ```
 
-This runs `scripts/setup_env.py`, which downloads missing binaries and VapourSynth plugins, creates `vs/python-env`, and installs/updates Python deps. Re-run anytime: existing binaries/plugins are left alone (delete them to force a re-download); pip packages are refreshed each run. Requires **Python 3.12+** on PATH (or the Windows `py` launcher).
+This runs `scripts/setup_env.py`, which downloads missing binaries and VapourSynth plugins, creates `vs/python-env`, and installs/updates Python deps. Re-run anytime: existing binaries/plugins are left alone (delete them to force a re-download); pip packages are refreshed each run. Python selection: the `py` launcher with `-3.13`, `-3.12`, `-3.14`, then `py -3`, `python`, `python3`. The first supported version (3.12–3.14) wins; if only a newer one is found, setup stops early and names the version to install. A `vs/python-env` left over from an unsupported Python is recreated automatically. The FFMS2 plugin (`.7z`) is extracted with Windows' built-in `tar`, falling back to 7-Zip and then `py7zr`, so a failed pip install doesn't also lose SSIMU2.
 
 ### 2. Launch the studio
 
