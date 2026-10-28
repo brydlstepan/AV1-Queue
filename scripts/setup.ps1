@@ -17,23 +17,23 @@ function Write-Banner {
     Write-Host ""
 }
 
-# Supported Python minor versions: every requirement (and its deps, e.g.
-# py7zr -> inflate64/pybcj/pyppmd, uvicorn[standard] -> pyyaml) must ship a
-# Windows wheel for it, or pip falls back to source builds that need MSVC.
+# Supported Python minor versions: every requirement (and its deps) must ship
+# a Windows wheel for it, or pip falls back to source builds that need MSVC.
 # Keep in sync with SUPPORTED_PYTHON in setup_env.py and the README.
 $MinPythonMinor = 12
-$MaxPythonMinor = 14
+$MaxPythonMinor = 15
 $RecommendedPython = "3.13"
 
 function Resolve-Python {
     # Prefer the Windows py launcher with explicit supported versions, so a
-    # newer default (`py -3` = 3.15 before its wheels exist) or the Store
+    # newer default (`py -3` = a release without wheels yet) or the Store
     # `python` stub doesn't win. Unsupported finds are returned too, so the
     # caller can name them in the error.
     $candidates = @(
         @{ Cmd = "py"; Args = @("-3.13") },
         @{ Cmd = "py"; Args = @("-3.12") },
         @{ Cmd = "py"; Args = @("-3.14") },
+        @{ Cmd = "py"; Args = @("-3.15") },
         @{ Cmd = "py"; Args = @("-3") },
         @{ Cmd = "python"; Args = @() },
         @{ Cmd = "python3"; Args = @() }
@@ -95,8 +95,8 @@ if (-not $python) {
     $seen = @($resolved.Unsupported | ForEach-Object { $_.Version } | Select-Object -Unique)
     if ($seen.Count -gt 0) {
         Write-Host "[ERROR] Only unsupported Python found: $($seen -join ', ') (need $supported)." -ForegroundColor Red
-        Write-Host "  Newer Pythons lack prebuilt wheels for some packages (inflate64, pybcj," -ForegroundColor Yellow
-        Write-Host "  pyppmd, pyyaml); pip would need Microsoft Visual C++ to build them." -ForegroundColor Yellow
+        Write-Host "  Newer Pythons can lack prebuilt wheels for some packages;" -ForegroundColor Yellow
+        Write-Host "  pip would then need Microsoft Visual C++ to build them." -ForegroundColor Yellow
     } else {
         Write-Host "[ERROR] Python $supported was not found." -ForegroundColor Red
     }

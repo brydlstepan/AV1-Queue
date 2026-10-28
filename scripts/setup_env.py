@@ -19,10 +19,9 @@ CORE_DIR = BASE_DIR / "core"
 TEMP_DIR = BASE_DIR / "_temp"
 VENV_DIR = VS_DIR / "python-env"
 
-# Python minors with Windows wheels for every requirement (incl. py7zr's
-# inflate64/pybcj/pyppmd and uvicorn[standard]'s pyyaml) — outside this range
+# Python minors with Windows wheels for every requirement — outside this range
 # pip builds from source and needs MSVC. Keep in sync with setup.ps1 / README.
-SUPPORTED_PYTHON = ((3, 12), (3, 14))
+SUPPORTED_PYTHON = ((3, 12), (3, 15))
 RECOMMENDED_PYTHON = "3.13"
 
 ERRORS: list[str] = []
@@ -85,9 +84,9 @@ def extract_zip(zip_path: Path, dest_dir: Path) -> None:
 
 
 def extract_7z(archive: Path, dest_dir: Path, python_exe: Path) -> bool:
-    """Extract a .7z with whatever is available, so a failed pip install
-    (no py7zr) doesn't also cost the plugins: Windows' own tar (bsdtar reads
-    7z), then 7-Zip, then py7zr from the venv."""
+    """Extract a .7z with whatever is available: Windows' own tar (bsdtar
+    reads 7z on Windows 11), then 7-Zip, then py7zr in the venv — not in
+    requirements.txt (no wheels for new Pythons), so installed only here."""
     import os
 
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
@@ -114,6 +113,8 @@ def extract_7z(archive: Path, dest_dir: Path, python_exe: Path) -> bool:
     for label, cmd in attempts:
         print(f"[*] Extracting {archive.name} using {label}...")
         fresh_dir(dest_dir)
+        if label == "py7zr":
+            subprocess.run([str(python_exe), "-m", "pip", "install", "-q", "py7zr"])
         try:
             r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         except OSError as e:
