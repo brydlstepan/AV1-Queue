@@ -4511,6 +4511,7 @@ document.addEventListener("DOMContentLoaded", () => {
         ? `<span class="h-stats-pill h-ssimu2-pill" style="color: ${ssimu2PillColor}; background: ${ssimu2PillBg};">SSIMU2 avg: ${Math.round(Number(ssimu2Avg))} — min: ${Math.round(Number(ssimu2Min ?? 0))} — p15: ${Math.round(Number(ssimu2P15 ?? 0))}</span>`
         : "";
       const estFullBytesBadge = item.stats?.estimated_full_bytes;
+      const estFullTime = item.config?.test_mode ? item.stats?.estimated_full_encode_seconds : null;
       const testHtml = item.config?.test_mode
         ? `<span class="h-stats-pill badge-test">TEST${estFullBytesBadge ? ` — Est size: ${formatBytesShort(estFullBytesBadge)}` : ""}</span>`
         : "";
@@ -4568,7 +4569,7 @@ document.addEventListener("DOMContentLoaded", () => {
               <span class="badge badge-hdr">${escapeHtml(hdrLabel)}</span>
               ${(!isFailed && !isCancelled) ? audioBadge : ""}
               <span>•</span>
-              <span>Run: ${durStr}</span>
+              <span>Run: ${durStr}${estFullTime ? ` <span title="Estimated full-length encode time: this segment's encoding phase (pauses, scan and mux excluded) scaled to the whole title">(est. ${formatSeconds(estFullTime)})</span>` : ""}</span>
             </div>
           </div>
           <div class="history-card-right">

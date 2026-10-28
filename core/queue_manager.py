@@ -1850,6 +1850,9 @@ class QueueManager:
             enc_fps = frame_rate_to_float(((job.get("media_info") or {}).get("video") or {}).get("r_frame_rate"))
             enc_total_frames = enc_dur * enc_fps if enc_dur > 0 and enc_fps else 0.0
             enc_progress = {"start": None, "next": 5}
+            # Active-clock span of HandBrake's progress reports: the encoding phase
+            # alone — its scan before and its mux / MP4 rewrite after aren't in it
+            enc_phase = {"first": None, "last": None}
 
             def log_encode_progress(pct: float) -> None:
                 # Short inputs (Test Mode clips): HandBrake's % counts frames handed
@@ -1900,6 +1903,10 @@ class QueueManager:
 
                 # Outside progress_lock: append_log takes it too
                 if data.get("percent") is not None and not raw:
+                    now = self._active_clock()
+                    if enc_phase["first"] is None:
+                        enc_phase["first"] = now
+                    enc_phase["last"] = now
                     log_encode_progress(float(data["percent"]))
 
             self._wait_if_paused()
@@ -1981,6 +1988,20 @@ class QueueManager:
                 seg_duration = float((seg_media or {}).get("duration") or 0)
                 if full_duration > 0 and seg_duration > 0:
                     estimated_full_bytes = int(round(final_size * (full_duration / seg_duration)))
+            # Same extrapolation for time, from the encoding phase only (pauses,
+            # HandBrake's scan and the mux / publish steps excluded)
+            estimated_full_encode_seconds = None
+            if cfg.get("test_mode") and enc_phase["first"] is not None:
+                phase_seconds = enc_phase["last"] - enc_phase["first"]
+                full_duration = float((job.get("media_info") or {}).get("duration") or 0)
+                seg_duration = float((seg_media or {}).get("duration") or 0)
+                if phase_seconds > 0 and full_duration > 0 and seg_duration > 0:
+                    estimated_full_encode_seconds = int(round(phase_seconds * (full_duration / seg_duration)))
+                    append_log(
+                        f"Est. full-length encode time ~{_fmt_duration(estimated_full_encode_seconds)} "
+                        f"(encoding phase {_fmt_duration(phase_seconds)} × {full_duration / seg_duration:.1f})",
+                        update_stage=False,
+                    )
 
             # Watch-folder verification + return-to-source-folder. Only applies to
             # jobs the watcher itself queued (marked via watch_source_dir) — a
@@ -2044,6 +2065,8 @@ class QueueManager:
                 job["stats"]["trim_end"] = cfg.get("trim_end")
                 if estimated_full_bytes is not None:
                     job["stats"]["estimated_full_bytes"] = estimated_full_bytes
+                if estimated_full_encode_seconds is not None:
+                    job["stats"]["estimated_full_encode_seconds"] = estimated_full_encode_seconds
             if crop and any(crop.values()):
                 job["stats"]["crop"] = crop
 
