@@ -61,7 +61,7 @@ _DEFAULTS: Dict[str, Any] = {
 # literals in queue_manager.add_job). Values that should track a user-facing app
 # setting — autoname_output, the name templates, subtitle_search — are NOT
 # duplicated here; add_job overlays those from load_settings() so the setting
-# stays authoritative.
+# stays authoritative (queued jobs also follow later changes — JOB_SETTING_KEYS).
 JOB_CONFIG_DEFAULTS: Dict[str, Any] = {
     "crf": 30.0,
     "preset": 4,
@@ -146,6 +146,30 @@ def get_pipeline_settings(settings: Dict[str, Any] | None = None) -> Dict[str, A
     """The saved pipeline overrides (only keys the UI has saved; may be empty)."""
     data = settings if settings is not None else load_settings()
     return normalize_pipeline(data.get("pipeline"))
+
+
+# Top-level settings queued jobs follow too, same as the pipeline keys above:
+# naming (saving them renames every queued job), the online subtitle search,
+# and Preserve DoVi RPU (it decides the [hdr] label). lp / low-memory are read
+# live as a job starts, so they need no stamping.
+JOB_SETTING_KEYS = (
+    "autoname_output", "name_template_movie", "name_template_episode",
+    "subtitle_search", "preserve_dovi_rpu",
+)
+
+
+def default_setting(key: str) -> Any:
+    """A setting's built-in default (what a job that never stored it had)."""
+    return _DEFAULTS.get(key)
+
+
+def get_queued_job_settings(settings: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Everything a queued job takes from the current settings: the saved
+    pipeline overrides plus JOB_SETTING_KEYS."""
+    data = settings if settings is not None else load_settings()
+    out = get_pipeline_settings(data)
+    out.update({k: data[k] for k in JOB_SETTING_KEYS if data.get(k) is not None})
+    return out
 
 
 _cache_lock = threading.Lock()
