@@ -556,7 +556,11 @@ class QueueManager:
         with self._lock:
             self._save_queue_unlocked()
 
-    def add_job(self, input_path: str, output_path: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def add_job(self, input_path: str, output_path: Optional[str] = None, config: Optional[Dict[str, Any]] = None,
+                media_tag: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """media_tag: naming from an earlier job of this file (history requeue)
+        — kept as is (title, year, IMDb id, edits) instead of re-parsing the
+        filename; only resolution / HDR / the rendered name are refreshed."""
         inp = Path(input_path).resolve()
         if not inp.exists():
             raise FileNotFoundError(f"Input file not found: {input_path}")
@@ -617,14 +621,24 @@ class QueueManager:
                 kinds=default_config.get("subtitle_kinds"),
             )
 
-        media_tag = build_media_tag(
-            inp,
-            video=media.get("video"),
-            hdr_info=hdr_info,
-            settings=self._naming_settings(default_config),
-            container=default_config.get("container") or JOB_CONFIG_DEFAULTS["container"],
-            resolution_target=default_config.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
-        )
+        if isinstance(media_tag, dict) and media_tag.get("title"):
+            media_tag = refresh_media_tag_quality(
+                {**media_tag, "tmdb_pending": False},
+                video=media.get("video"),
+                hdr_info=hdr_info,
+                resolution_target=default_config.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
+                container=default_config.get("container") or JOB_CONFIG_DEFAULTS["container"],
+                settings=self._naming_settings(default_config),
+            )
+        else:
+            media_tag = build_media_tag(
+                inp,
+                video=media.get("video"),
+                hdr_info=hdr_info,
+                settings=self._naming_settings(default_config),
+                container=default_config.get("container") or JOB_CONFIG_DEFAULTS["container"],
+                resolution_target=default_config.get("resolution_target") or JOB_CONFIG_DEFAULTS["resolution_target"],
+            )
 
         # Default output path: library naming when enabled, else _av1_boost.
         # When Output folder path is set (Watch settings), every job — manual or

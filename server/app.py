@@ -412,7 +412,10 @@ async def requeue_history_item(req: ActionRequest):
     if not input_path or not Path(input_path).is_file():
         raise HTTPException(status_code=400, detail="Original source file no longer exists")
     try:
-        job = await asyncio.to_thread(queue_mgr.add_job, input_path, config=item.get("config"))
+        # The record's naming (title, IMDb id, manual edits) comes back with it
+        job = await asyncio.to_thread(
+            queue_mgr.add_job, input_path, config=item.get("config"), media_tag=item.get("media_tag"),
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     # A copy goes back to the queue; the history record stays as the record of the finished encode.
