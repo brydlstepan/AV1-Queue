@@ -717,7 +717,7 @@ class TranscodePipeline:
         log_file, and its tail is raised on failure. The caller verifies and
         publishes the partial — on cancel or failure it is deleted here.
         """
-        from core.handbrake_encode import PROGRESS_RE
+        from core.handbrake_encode import PROGRESS_RE, describe_handbrake_failure
 
         partial = Path(partial)
         partial.parent.mkdir(parents=True, exist_ok=True)
@@ -819,7 +819,11 @@ class TranscodePipeline:
                 _drop_partial()
                 tail = "\n".join(err_tail[-12:]).strip()
                 detail = f"\nLast HandBrake output:\n{tail}" if tail else ""
-                raise RuntimeError(f"HandBrakeCLI failed with exit code {process.returncode}.{detail}")
+                reason = describe_handbrake_failure(process.returncode, err_tail)
+                reason = f" {reason}" if reason else ""
+                raise RuntimeError(
+                    f"HandBrakeCLI failed with exit code {process.returncode}.{reason}{detail}"
+                )
         finally:
             self._untrack_process(process)
             self.current_process = None

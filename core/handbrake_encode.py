@@ -238,6 +238,38 @@ def summarize_handbrake_log(log_text: str, max_notes: int = 15) -> Dict[str, Any
     return {"notes": notes, "frames": frames, "dropped": dropped}
 
 
+# libhb's hb_error_code — HandBrakeCLI exits with the work result
+_HB_EXIT_REASONS = {
+    2: "HandBrake could not open the source (wrong or unreadable input)",
+    3: "HandBrake failed to initialise the encode",
+    5: "HandBrake could not read the source file",
+}
+_HB_SYNC_GOT_RE = re.compile(r"sync: got (\d+) frames, (\d+) expected")
+_HB_SYNC_FPS_RE = re.compile(r"sync: framerate .*avg ([\d.]+) fps")
+
+
+def describe_handbrake_failure(returncode: int, log_lines: List[str]) -> str:
+    """One-line reason for a failed HandBrakeCLI run, e.g. for exit 5 (read
+    error) where it stopped in the source; "" for codes with nothing to add."""
+    reason = _HB_EXIT_REASONS.get(returncode)
+    if not reason:
+        return ""
+    text = "\n".join(log_lines)
+    m = _HB_SYNC_GOT_RE.search(text)
+    if m and int(m.group(2)) > int(m.group(1)):
+        got, expected = int(m.group(1)), int(m.group(2))
+        where = f"{got * 100 // expected}%"
+        fps = _HB_SYNC_FPS_RE.search(text)
+        if fps and float(fps.group(1)) > 0:
+            secs = int(got / float(fps.group(1)))
+            where += f", {secs // 3600}:{secs % 3600 // 60:02d}:{secs % 60:02d} into the video"
+        reason += f" — it stopped at {where}"
+    if returncode == 5:
+        reason += (". Usually a drive that dropped out (USB / network) or a damaged file;"
+                   " requeue to retry, and check the drive if it happens again")
+    return reason + "."
+
+
 def build_handbrake_command(
     input_file: Path,
     output_file: Path,
