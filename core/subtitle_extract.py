@@ -147,11 +147,19 @@ def normalize_subtitle_utf8(path: Path) -> Optional[str]:
 
 
 # Leading/trailing credit / author / site spam commonly prepended to fan-subs.
+_CREDIT_ROLES = (
+    r"(?:created|subtitles?|subs?|translated?|translation|timed?|timing|"
+    r"re-?timed|synced?|re-?sync(?:ed)?|corrected?|corrections?|fixed|improved|"
+    r"edited|encoded?|ripped?|provided|brought|adapted|proofread|uploaded)"
+)
 _CREDIT_LINE_RE = re.compile(
     r"(?is)^\s*(?:"
-    r"(?:created|subtitles?|subs?|translated?|translation|timed?|timing|"
-    r"synced?|resync(?:ed)?|corrected?|encoded?|ripped?|provided|"
-    r"brought|adapted|proofread)\s+by\b|"
+    # One role or several: "Synced by", "Fixed & Synced By"
+    rf"(?:{_CREDIT_ROLES}\s*(?:&|\+|/|,|and)\s*)*{_CREDIT_ROLES}\s+by\b|"
+    r"credits?\s+(?:to|for)\b.*\b(?:subs?|subtitles?|captions?|translation)\b|"
+    r"(?:\w+\s+)?titulky\s*:|"  # České titulky: …
+    r"(?:překlad|přečas(?:ování)?|časování|korekce)(?:\s+\S+){0,3}\s*:|"  # Překlad titulků: …
+    r"(?:přeložil|přečasoval|upravil)a?\b|"
     r"copyright\b|\(c\)|©|"
     r"all\s+rights\s+reserved|"
     r"opensubtitles(?:\.org|\.com)?|"
