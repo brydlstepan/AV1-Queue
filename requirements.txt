@@ -17,3 +17,4 @@ langcodes
 guessit
 charset-normalizer
 watchdog
+numpy  # subtitle sync (core/subtitle_sync.py)

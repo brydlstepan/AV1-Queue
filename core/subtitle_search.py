@@ -21,10 +21,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from core.subtitle_extract import iso6391, normalize_subtitle_utf8, strip_subtitle_credits
+from core.subtitle_sync import describe_sync, speech_activity, sync_subtitle_file
 
 OPENSUBTITLES_BASE = "https://api.opensubtitles.com/api/v1"
 USER_AGENT = "AV1Queue v1.0"
 _HASH_BLOCK = 65536
+# Downloads per missing subtitle when the better-ranked ones can't be synced
+# (each one counts against the OpenSubtitles daily quota)
+_MAX_SYNC_ATTEMPTS = 3
 
 Kind = str  # "standard" | "forced" | "sdh"
 Slot = Tuple[str, Kind]  # (iso639-1 lang, kind)
@@ -432,14 +436,15 @@ def _fps_score(candidate_fps: Optional[float], target_fps: Optional[float]) -> f
     return -1.0  # likely wrong timing
 
 
-def pick_best_for_slot(
+def rank_for_slot(
     results: List[Dict[str, Any]],
     lang: str,
     kind: Kind,
     *,
     fps: Optional[float] = None,
     release_hint: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+) -> List[Dict[str, Any]]:
+    """Results usable for this slot, the best timing match first."""
     candidates = [
         r for r in results
         if r.get("language") == lang and r.get("kind") == kind
@@ -452,8 +457,6 @@ def pick_best_for_slot(
             and not r.get("hearing_impaired")
             and not r.get("foreign_parts_only")
         ]
-    if not candidates:
-        return None
 
     def score(r: Dict[str, Any]):
         return (
@@ -464,7 +467,7 @@ def pick_best_for_slot(
             int(r.get("download_count") or 0),
         )
 
-    return sorted(candidates, key=score, reverse=True)[0]
+    return sorted(candidates, key=score, reverse=True)
 
 
 def _sidecar_filename(stem: str, lang: str, kind: Kind) -> str:
@@ -494,6 +497,9 @@ def search_and_download_missing(
     season: Optional[int] = None,
     episode: Optional[int] = None,
     release_hint: Optional[str] = None,
+    sync_media: Optional[Path] = None,
+    ffmpeg: Optional[Path] = None,
+    ffprobe: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     For each preferred (language, kind) missing a sidecar, download one file.
@@ -505,6 +511,10 @@ def search_and_download_missing(
          filename plus its container title, which keeps the release name of
          a renamed file); BluRay/REMUX preferred over WEB-DL for a disc rip
       4) IMDb / title search as the discovery fallback
+
+    With sync_media (and the tools), each download is then measured against
+    that file's audio and retimed. One that can't be lined up gives way to the
+    next-ranked result; if none can, the top one is kept as downloaded.
     """
     def log(msg: str):
         if progress_cb:
@@ -612,16 +622,67 @@ def search_and_download_missing(
 
     written: List[str] = []
     still_missing: List[str] = []
+    activity: Any = None
+    activity_read = False
+
+    def audio_activity() -> Any:
+        nonlocal activity, activity_read
+        if not activity_read:
+            activity_read = True
+            if sync_media and ffmpeg and ffprobe:
+                log(f"Reading speech timing from {Path(sync_media).name}")
+                try:
+                    activity = speech_activity(Path(sync_media), Path(ffmpeg), Path(ffprobe))
+                except Exception as e:
+                    log(f"Could not read the audio for subtitle sync: {e}")
+        return activity
+
+    def fetch_candidate(best: Dict[str, Any], target: Path, lang: str, kind: Kind) -> bool:
+        why = []
+        if best.get("moviehash_match"):
+            why.append("hash")
+        if best.get("fps"):
+            why.append(f"{best['fps']} fps")
+        rel = (best.get("release") or "")[:60]
+        if rel:
+            why.append(rel)
+        log(
+            f"Downloading {lang.upper()} {kind} · file_id={best['file_id']}"
+            + (f" · {' · '.join(why)}" if why else "")
+        )
+        if not download_subtitle_file(
+            api_key=api_key,
+            file_id=int(best["file_id"]),
+            dest=target,
+            token=token,
+        ):
+            return False
+        try:
+            normalize_subtitle_utf8(target)
+        except Exception:
+            pass
+        # Credits go first: they sit far from the dialogue and would skew the sync
+        if strip_credits:
+            try:
+                removed = strip_subtitle_credits(target)
+                if removed:
+                    log(f"Removed {removed} credit cue(s) from {dest.name}")
+            except Exception as e:
+                log(f"Credit strip failed for {dest.name}: {e}")
+        return True
 
     for lang, kind in missing:
-        best = pick_best_for_slot(
-            results_by_kind.get(kind) or [],
-            lang,
-            kind,
-            fps=fps,
-            release_hint=release_hint,
-        )
-        if not best or not best.get("file_id"):
+        ranked = [
+            r for r in rank_for_slot(
+                results_by_kind.get(kind) or [],
+                lang,
+                kind,
+                fps=fps,
+                release_hint=release_hint,
+            )
+            if r.get("file_id")
+        ]
+        if not ranked:
             still_missing.append(f"{lang}.{kind}")
             continue
 
@@ -636,41 +697,47 @@ def search_and_download_missing(
                 dest = parent / f"{stem}.{lang}.{n}.srt"
             n += 1
 
-        why = []
-        if best.get("moviehash_match"):
-            why.append("hash")
-        if best.get("fps"):
-            why.append(f"{best['fps']} fps")
-        rel = (best.get("release") or "")[:60]
-        if rel:
-            why.append(rel)
-        log(
-            f"Downloading {lang.upper()} {kind} · file_id={best['file_id']}"
-            + (f" · {' · '.join(why)}" if why else "")
-        )
-        ok = download_subtitle_file(
-            api_key=api_key,
-            file_id=int(best["file_id"]),
-            dest=dest,
-            token=token,
-        )
-        if ok:
+        # Worked on beside the sidecar, so a rejected try never shows up as one
+        trial = dest.with_name(dest.name + ".tmp")
+        fallback = dest.with_name(dest.name + ".first.tmp")
+        saved = False
+        have_fallback = False
+        for best in ranked[:_MAX_SYNC_ATTEMPTS]:
+            if not fetch_candidate(best, trial, lang, kind):
+                log(f"Download failed for {lang}.{kind}")
+                continue
             try:
-                normalize_subtitle_utf8(dest)
-            except Exception:
-                pass
-            if strip_credits:
-                try:
-                    removed = strip_subtitle_credits(dest)
-                    if removed:
-                        log(f"Removed {removed} credit cue(s) from {dest.name}")
-                except Exception as e:
-                    log(f"Credit strip failed for {dest.name}: {e}")
+                result = sync_subtitle_file(trial, audio_activity())
+            except Exception as e:
+                result = {"status": "unavailable", "reason": f"sync failed: {e}"}
+            label = f"{lang.upper()} {kind}"
+            if result["status"] == "rejected":
+                log(f"{label} sync: rejected, {describe_sync(result)}")
+                if have_fallback:
+                    trial.unlink(missing_ok=True)
+                else:
+                    trial.replace(fallback)
+                    have_fallback = True
+                continue
+            if result["status"] == "ok":
+                log(f"{label} sync: {describe_sync(result)}")
+            else:
+                # Can't be measured at all: another download wouldn't change that
+                log(f"{label} sync skipped: {describe_sync(result)}")
+            trial.replace(dest)
+            saved = True
+            break
+        if saved:
+            fallback.unlink(missing_ok=True)
+        elif have_fallback:
+            fallback.replace(dest)
+            saved = True
+            log(f"WARNING: {lang.upper()} {kind} kept as downloaded, sync not verified — timing may be off")
+        if saved:
             written.append(str(dest))
             log(f"Saved {dest.name}")
         else:
             still_missing.append(f"{lang}.{kind}")
-            log(f"Download failed for {lang}.{kind}")
 
     status = "ok" if written else ("skip" if still_missing else "ok")
     return {

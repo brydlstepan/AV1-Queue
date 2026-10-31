@@ -2338,6 +2338,11 @@ class QueueManager:
                                         src_for_subs.name,
                                         (job.get("media_info") or {}).get("source_title"),
                                     ))),
+                                    # Test Mode sidecars are full-length, timed
+                                    # to the original; the test output is a clip
+                                    sync_media=src_for_subs if cfg.get("test_mode") else out_for_subs,
+                                    ffmpeg=self.pipeline.bin_dir / "ffmpeg.exe",
+                                    ffprobe=self.pipeline.bin_dir / "ffprobe.exe",
                                 )
                                 self.emit_event("subtitle_search", {
                                     "id": jid,
