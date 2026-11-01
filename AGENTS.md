@@ -1,6 +1,6 @@
 # AGENTS.md — AV1 Queue
 
-Guidance for AI agents working in this repository. Prefer this file over re-deriving project intent from scattered sources; the README has deeper rationale.
+Guidance for AI agents working in this repository. Prefer this file over re-deriving project intent from scattered sources; `docs/ARCHITECTURE.md` has deeper rationale.
 
 ## What this project is
 
@@ -52,7 +52,7 @@ These are product decisions, not preferences:
   - HDR source whose output isn't HDR → output discarded, job fails
 - Chapters/subtitles and the source's container metadata (e.g. its release-name title) are stripped from the output; audio tracks are left unnamed (sidecars are separate)
 
-Full tables and rationale: README → *Format philosophy* → *HDR & Dolby Vision*.
+Full tables and rationale: `docs/ARCHITECTURE.md` → *Format philosophy* → *HDR & Dolby Vision*.
 
 ## Directory map
 
@@ -98,8 +98,8 @@ Useful API: `/api/queue`, `/api/queue/add`, `/api/queue/update`, `/api/queue/req
 ## When changing behavior
 
 1. Preserve the single-pass HandBrake/Tritium encode and the HDR skip/passthrough rules above unless the user explicitly redesigns them
-2. Update README sections that document user-facing behavior when you change pipeline/format/HDR semantics
-3. Keep agent instructions here short; put long rationale in the README
+2. Update the README or `docs/` sections that document user-facing behavior when you change pipeline/format/HDR semantics
+3. Keep agent instructions here short; put long rationale in `docs/ARCHITECTURE.md`
 
 Runtime/local paths are covered by `.gitignore`.
 

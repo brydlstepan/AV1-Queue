@@ -72,7 +72,7 @@ class BasicAuthMiddleware:
     default loopback-only deployment has never needed this. Loopback requests
     are always exempt: the tray launcher and the local browser tab have no way
     to supply credentials, and 127.0.0.1 already means "this machine". This
-    only gates the surface AV1QUEUE_HOST opens up (see README "Network access").
+    only gates the surface AV1QUEUE_HOST opens up (see docs/CONFIGURATION.md "Network access").
 
     Pure ASGI (not Starlette's BaseHTTPMiddleware) so it can also gate the
     /ws/live websocket handshake, not just HTTP routes.

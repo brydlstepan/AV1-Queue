@@ -11,11 +11,11 @@ isn't reachable through a single ``--host``: a non-wildcard host excludes
 loopback, and ``0.0.0.0``/``::`` includes every interface, LAN included.
 Binding two real sockets gets exactly loopback + Tailscale and nothing else.
 
-Env vars (see README "Network access"):
+Env vars (see docs/CONFIGURATION.md "Network access"):
   AV1QUEUE_PORT  — default 8765
   AV1QUEUE_HOST  — comma-separated extra bind addresses, e.g. a Tailscale IP,
                    or 0.0.0.0 for every interface (LAN included — the
-                   README's exposure warning applies). Loopback (127.0.0.1)
+                   the exposure warning there applies). Loopback (127.0.0.1)
                    is always included too, unless a wildcard address is
                    already present (which already covers loopback, and
                    binding both would just double-bind the same traffic).
@@ -128,7 +128,7 @@ def main() -> None:
         print(
             "[av1queue] Reachable from other machines"
             + ("" if auth_on else " with NO LOGIN configured (AV1QUEUE_USERNAME/AV1QUEUE_PASSWORD unset)")
-            + " — see README 'Network access'."
+            + " — see docs/CONFIGURATION.md 'Network access'."
         )
 
     config = uvicorn.Config("server.app:app", log_level="info")

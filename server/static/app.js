@@ -825,7 +825,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Policy: P5 (base-layer compat 0) is skipped; every other profile
       // encodes as HDR10 (HDR10+ kept if present). RPU passthrough alongside
       // that HDR10 base layer is on by default (settings.preserve_dovi_rpu)
-      // and best-effort — see README.md "HDR & Dolby Vision".
+      // and best-effort — see docs/ARCHITECTURE.md "HDR & Dolby Vision".
       if (compat === 0 || profNum === 5) {
         return `Dolby Vision (${prof}) — will be skipped (base layer not standalone)`;
       }
@@ -3268,7 +3268,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- In-App File Browser ---
   // Files live on the machine running the server, not the browser making the
   // request — a native OS file dialog or drag-and-drop would target the wrong
-  // filesystem for anyone connecting remotely (see README "Network access"),
+  // filesystem for anyone connecting remotely (see docs/CONFIGURATION.md "Network access"),
   // so adding files always goes through /api/browse instead.
   dropZone.addEventListener("click", () => openBrowser(localStorage.getItem(LAST_BROWSE_PATH_KEY) || "drives"));
 

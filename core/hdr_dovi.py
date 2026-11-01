@@ -4,7 +4,7 @@ Detects HDR10 / HLG / HDR10+ / Dolby Vision from ffprobe (stream side data plus
 sampled frame SEI) for the queue's skip / quarantine policy, output naming and
 the post-encode check of HandBrake's output.
 
-Policy (see README.md "HDR & Dolby Vision"): a DV source whose base layer
+Policy (see docs/ARCHITECTURE.md "HDR & Dolby Vision"): a DV source whose base layer
 stands on its own (profile 7 / 8.1, BL signal-compatibility id != 0) is always
 encoded as HDR10; a profile-5 source (compat id 0) is skipped upstream. The
 encode itself — HDR10 static metadata, HDR10+ and (settings.preserve_dovi_rpu)

@@ -1224,7 +1224,7 @@ class QueueManager:
         manual review. Filename-only DoVi hints are never authoritative — if probe
         did not confirm DoVi side_data, quarantine rather than guess P5 vs P7/P8.1.
         Confirmed DoVi with neither a usable compat id nor a known dual-layer
-        profile is also quarantined. (see README.md "HDR & Dolby Vision")
+        profile is also quarantined. (see docs/ARCHITECTURE.md "HDR & Dolby Vision")
         """
         if not hdr_analysis:
             return None
@@ -1908,7 +1908,7 @@ class QueueManager:
             else:
                 append_log("Color: SDR (no HDR/DoVi signaling)", update_stage=False)
 
-            # Policy (see README.md "HDR & Dolby Vision"): a Dolby Vision source whose base layer cannot
+            # Policy (see docs/ARCHITECTURE.md "HDR & Dolby Vision"): a Dolby Vision source whose base layer cannot
             # stand on its own — profile 5, BL signal-compatibility id 0 — must never
             # be re-encoded. Leave the original file untouched.
             skip_reason = self._dovi_skip_reason(hdr_analysis)

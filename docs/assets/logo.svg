@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="AV1 Queue logo">
+  <defs>
+    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffc24d"/>
+      <stop offset="0.55" stop-color="#f98a3c"/>
+      <stop offset="1" stop-color="#ee5468"/>
+    </linearGradient>
+  </defs>
+  <path d="M71 8 27 67a4 4 0 0 0 3 6h22l-8 37a2 2 0 0 0 4 1l45-61a4 4 0 0 0-3-6H67l8-35a2 2 0 0 0-4-1z" fill="url(#bolt)"/>
+</svg>
