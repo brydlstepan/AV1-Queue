@@ -129,8 +129,7 @@ AV1-Queue/
     ├── start_queue.ps1        # Foreground launcher (visible console, for debugging)
     ├── tray_launcher.ps1      # Background launcher used by runGUI.bat (tray icon)
     ├── load_env.ps1           # Loads .env into both launchers
-    ├── launch_hidden.vbs      # Runs tray_launcher.ps1 with zero window flash
-    └── survey_library.py      # One-off report of the HDR layers a library carries
+    └── launch_hidden.vbs      # Runs tray_launcher.ps1 with zero window flash
 ```
 
 ---
