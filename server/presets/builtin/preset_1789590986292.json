@@ -10,7 +10,7 @@
   "audio_languages": null,
   "audio_best_only": true,
   "svt_params": {
-    "noise": 14,
+    "noise": 16,
     "noise-chroma": 4,
     "noise-size": 7,
     "noise-adaptive-filtering": 0,
