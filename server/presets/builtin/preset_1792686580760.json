@@ -10,9 +10,8 @@
   "audio_languages": null,
   "audio_best_only": true,
   "svt_params": {
-    "noise": 21,
-    "noise-chroma": 6,
-    "noise-chroma-from-luma": 1,
+    "noise": 16,
+    "noise-chroma": 3,
     "noise-size": 0,
     "noise-adaptive-filtering": 0,
     "enable-dlf": 2,
