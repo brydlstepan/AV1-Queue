@@ -12,7 +12,7 @@
   "svt_params": {
     "noise": 23,
     "noise-chroma": 5,
-    "noise-size": 7,
+    "noise-size": 5,
     "noise-adaptive-filtering": 0,
     "enable-dlf": 2,
     "qp-scale-compress-strength": 3,
