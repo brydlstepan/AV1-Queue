@@ -76,6 +76,8 @@ def build_config(preset: Optional[Dict[str, Any]], watch_dir: Path, preset_via: 
         config["crf"] = p.get("crf", 30.0)
         config["preset"] = p.get("preset", 4)
         config["resolution_target"] = p.get("resolution_target", "source")
+        config["nlmeans"] = p.get("nlmeans", "off")
+        config["nlmeans_tune"] = p.get("nlmeans_tune", "none")
         config["audio_bitrate_51"] = p.get("audio_bitrate_51", "320k")
         config["audio_bitrate_stereo"] = p.get("audio_bitrate_stereo", "160k")
         if p.get("audio_languages"):

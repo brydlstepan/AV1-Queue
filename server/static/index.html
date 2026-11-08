@@ -380,6 +380,50 @@ Default: PSNR</span>
                   </select>
                 </div>
               </div>
+              <div class="setting-row is-default" data-basic-key="nlmeans">
+                <label class="setting-label" for="pEditNlmeans">
+                  <span class="setting-label-text">Denoise (NLMeans)</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">--nlmeans
+HandBrake's NLMeans denoiser, run before the encoder. It averages only patches that look alike, so it holds up better on motion and flicker than the encoder's temporal filter (enable-tf). Removes real grain to save bits; synthetic grain (noise) puts texture back. Fine detail can go with the grain, so start at Ultralight or Light. Slow (CPU).
+Default: Off</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditNlmeans" title="Reset to default (off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="pEditNlmeans" class="form-input basic-field" data-default="off">
+                    <option value="off">Off</option>
+                    <option value="ultralight">Ultralight</option>
+                    <option value="light">Light</option>
+                    <option value="medium">Medium</option>
+                    <option value="strong">Strong</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-basic-key="nlmeansTune">
+                <label class="setting-label" for="pEditNlmeansTune">
+                  <span class="setting-label-text">NLMeans Tune</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">--nlmeans-tune
+Adjusts the NLMeans preset for the content. Film: live action; Grain: heavy film grain; High Motion: lots of movement; Animation: cartoons; Tape: VHS-style noise; Sprite: pixel art. Only used when Denoise is on.
+Default: None</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default basic-reset" data-target="pEditNlmeansTune" title="Reset to default (none)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <select id="pEditNlmeansTune" class="form-input basic-field" data-default="none">
+                    <option value="none">None</option>
+                    <option value="film">Film</option>
+                    <option value="grain">Grain</option>
+                    <option value="highmotion">High Motion</option>
+                    <option value="animation">Animation</option>
+                    <option value="tape">Tape</option>
+                    <option value="sprite">Sprite</option>
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
 

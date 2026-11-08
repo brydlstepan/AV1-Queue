@@ -523,6 +523,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const pEditCrf = document.getElementById("pEditCrf");
   const pEditPreset = document.getElementById("pEditPreset");
   const pEditResolution = document.getElementById("pEditResolution");
+  const pEditNlmeans = document.getElementById("pEditNlmeans");
+  const pEditNlmeansTune = document.getElementById("pEditNlmeansTune");
   const pEditAudio51 = document.getElementById("pEditAudio51");
   const pEditAudioStereo = document.getElementById("pEditAudioStereo");
   const pEditIsDefault = document.getElementById("pEditIsDefault");
@@ -1638,6 +1640,8 @@ document.addEventListener("DOMContentLoaded", () => {
       crf: Number.isFinite(Number(p.crf)) ? Number(p.crf) : 35,
       preset: Number.isFinite(Number(p.preset)) ? Number(p.preset) : 3,
       resolution_target: p.resolution_target || "source",
+      nlmeans: p.nlmeans || "off",
+      nlmeans_tune: p.nlmeans_tune || "none",
       ssimu2: getSsimu2Mode(),
       audio_bitrate_51: p.audio_bitrate_51 || "320k",
       audio_bitrate_stereo: p.audio_bitrate_stereo || "160k",
@@ -1663,7 +1667,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Fields owned by the preset (ignore job-only: test_mode, trim, audio_tracks_order, subtitle_tracks)
   const PRESET_SYNC_KEYS = [
-    "preset_id", "preset_name", "crf", "preset", "resolution_target",
+    "preset_id", "preset_name", "crf", "preset", "resolution_target", "nlmeans", "nlmeans_tune",
     "audio_bitrate_51", "audio_bitrate_stereo", "svt_params"
   ];
 
@@ -2225,7 +2229,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const presetCommandPreviewBody = document.getElementById("presetCommandPreviewBody");
 
   /** Non-default encode settings as the lines shown in the preset Preview and the encode report. */
-  function buildParamsPreviewLines({ crf, preset, resolution, audio51, audioStereo, svt }) {
+  function buildParamsPreviewLines({ crf, preset, resolution, nlmeans, nlmeansTune, audio51, audioStereo, svt }) {
     const lines = [];
 
     const crfN = Number(crf ?? 35);
@@ -2238,6 +2242,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (res !== "source" && RESOLUTION_BOXES[res]) {
       const [bw, bh] = RESOLUTION_BOXES[res];
       lines.push(`--maxWidth ${bw} --maxHeight ${bh}  (fit inside, keep shape)`);
+    }
+
+    const nlm = nlmeans || "off";
+    if (nlm !== "off") {
+      const tune = nlmeansTune || "none";
+      lines.push(`--nlmeans=${nlm}` + (tune !== "none" ? ` --nlmeans-tune ${tune}` : ""));
     }
 
     const a51 = audio51 || "320k";
@@ -2273,6 +2283,8 @@ document.addEventListener("DOMContentLoaded", () => {
       crf: pEditCrf?.value,
       preset: pEditPreset?.value,
       resolution: pEditResolution?.value,
+      nlmeans: pEditNlmeans?.value,
+      nlmeansTune: pEditNlmeansTune?.value,
       audio51: pEditAudio51?.value,
       audioStereo: pEditAudioStereo?.value,
       svt: collectSvtOverrides(),
@@ -2469,6 +2481,8 @@ document.addEventListener("DOMContentLoaded", () => {
       pEditCrf.value = Number.isFinite(Number(preset.crf)) ? Math.round(Number(preset.crf)) : 35;
       pEditPreset.value = Number.isFinite(Number(preset.preset)) ? Number(preset.preset) : 3;
       pEditResolution.value = preset.resolution_target || "source";
+      pEditNlmeans.value = preset.nlmeans || "off";
+      pEditNlmeansTune.value = preset.nlmeans_tune || "none";
       pEditAudio51.value = preset.audio_bitrate_51 || "320k";
       pEditAudioStereo.value = preset.audio_bitrate_stereo || "160k";
       setToggle(pEditIsDefault, preset.id === selectedPreset);
@@ -2482,6 +2496,8 @@ document.addEventListener("DOMContentLoaded", () => {
       pEditCrf.value = 35;
       pEditPreset.value = 3;
       pEditResolution.value = "source";
+      pEditNlmeans.value = "off";
+      pEditNlmeansTune.value = "none";
       pEditAudio51.value = "320k";
       pEditAudioStereo.value = "160k";
       setToggle(pEditIsDefault, allPresets.length === 0);
@@ -2510,6 +2526,8 @@ document.addEventListener("DOMContentLoaded", () => {
       crf: Math.round(Math.min(70, Math.max(1, Number(pEditCrf.value) || 35))),
       preset: Math.round(Math.min(10, Math.max(-3, Number(pEditPreset.value) || 4))),
       resolution_target: pEditResolution.value || "source",
+      nlmeans: pEditNlmeans.value || "off",
+      nlmeans_tune: pEditNlmeansTune.value || "none",
       audio_bitrate_51: pEditAudio51.value,
       audio_bitrate_stereo: pEditAudioStereo.value,
       svt_params: collectSvtOverrides()
@@ -4229,6 +4247,8 @@ document.addEventListener("DOMContentLoaded", () => {
       crf: c.crf,
       preset: c.preset,
       resolution: c.resolution_target,
+      nlmeans: c.nlmeans,
+      nlmeansTune: c.nlmeans_tune,
       audio51: c.audio_bitrate_51,
       audioStereo: c.audio_bitrate_stereo,
       svt,

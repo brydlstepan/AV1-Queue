@@ -1494,6 +1494,8 @@ class QueueManager:
             ),
             # P7 → 8.1 conversion and RPU crop correction are HandBrake's own
             dynamic_metadata="all" if preserve_dovi else "hdr10plus",
+            nlmeans=cfg.get("nlmeans", JOB_CONFIG_DEFAULTS["nlmeans"]),
+            nlmeans_tune=cfg.get("nlmeans_tune", JOB_CONFIG_DEFAULTS["nlmeans_tune"]),
         )
         append_log("HandBrakeCLI " + subprocess.list2cmdline(cmd[1:]), update_stage=False)
 

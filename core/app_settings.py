@@ -66,6 +66,9 @@ JOB_CONFIG_DEFAULTS: Dict[str, Any] = {
     "crf": 30.0,
     "preset": 4,
     "resolution_target": "source",
+    # HandBrake NLMeans denoise: off / ultralight / light / medium / strong
+    "nlmeans": "off",
+    "nlmeans_tune": "none",
     "audio_bitrate_51": "320k",
     "audio_bitrate_stereo": "160k",
     "audio_format": "opus",

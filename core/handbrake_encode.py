@@ -23,6 +23,9 @@ Mapping from the job config:
     ~0.1 % pixel-aspect correction instead, and a non-1:1 SAR reads as
     "anamorphic" to some players / Jellyfin client profiles. HandBrake's
     default (auto) anamorphic would keep the width and stretch the pixels
+  - nlmeans / nlmeans_tune → --nlmeans=<preset> / --nlmeans-tune: HandBrake's
+    NLMeans denoise ahead of the encoder (off by default). Only HandBrake's
+    named presets and tunes are passed; anything else means off
   - DoVi P7 → 8.1 conversion, RPU crop correction and HDR10+ passthrough are
     HandBrake's (--hdr-dynamic-metadata); the static HDR10 flags come from its
     own scan of the source
@@ -134,6 +137,11 @@ def fit_in_box(width: int, height: int, box: Tuple[int, int]) -> Tuple[int, int]
     if scale >= 1.0:
         return w, h
     return int(round(w * scale / 2)) * 2, int(round(h * scale / 2)) * 2
+
+
+# HandBrake's named NLMeans strengths and content tunes (HandBrakeCLI --help)
+NLMEANS_PRESETS = frozenset({"ultralight", "light", "medium", "strong"})
+NLMEANS_TUNES = frozenset({"none", "film", "grain", "highmotion", "animation", "tape", "sprite"})
 
 
 def handbrake_available() -> bool:
@@ -283,6 +291,8 @@ def build_handbrake_command(
     autocrop: bool,
     target_box: Tuple[int, int],
     dynamic_metadata: str,
+    nlmeans: Any = "off",
+    nlmeans_tune: Any = "none",
 ) -> List[str]:
     """
     audio_tracks come from pipeline.select_and_prioritize_audio (audio_format,
@@ -322,6 +332,14 @@ def build_handbrake_command(
     if box_w > 0 and box_h > 0:
         # Fit inside the box (downscale only); HandBrake applies both limits
         cmd.extend(["--maxWidth", str(int(box_w)), "--maxHeight", str(int(box_h))])
+
+    strength = str(nlmeans or "off").strip().lower()
+    if strength in NLMEANS_PRESETS:
+        # Optional-argument option: the value must be joined with "="
+        cmd.append(f"--nlmeans={strength}")
+        tune = str(nlmeans_tune or "none").strip().lower()
+        if tune in NLMEANS_TUNES and tune != "none":
+            cmd.extend(["--nlmeans-tune", tune])
 
     if dynamic_metadata and dynamic_metadata != "none":
         cmd.extend(["--hdr-dynamic-metadata", dynamic_metadata])

@@ -209,6 +209,9 @@ class PresetModel(BaseModel):
     crf: float
     preset: int
     resolution_target: Optional[str] = "source"
+    # HandBrake NLMeans denoise preset ("off" = none) and its content tune
+    nlmeans: Optional[str] = "off"
+    nlmeans_tune: Optional[str] = "none"
     audio_bitrate_51: str
     audio_bitrate_stereo: str
     # Preferred audio languages in priority order (ISO-ish codes: eng, ces, …)
@@ -268,7 +271,7 @@ async def save_preset(preset: PresetModel):
     incoming = preset.model_dump()
     # Fields that affect queued job snapshots (must match frontend PRESET_SYNC_KEYS)
     sync_keys = (
-        "name", "crf", "preset", "resolution_target",
+        "name", "crf", "preset", "resolution_target", "nlmeans", "nlmeans_tune",
         "audio_bitrate_51", "audio_bitrate_stereo", "svt_params",
     )
     # Only overwrite fields the client actually submitted — the editor's
