@@ -1342,11 +1342,12 @@ class QueueManager:
 
     def _finalize_skipped(self, job, job_id, start_time, reason):
         """Record a skipped source in history without producing any output."""
+        # start_time is on self._active_clock(), so pauses are not counted
         job["status"] = JobStatus.SKIPPED
         job["stage"] = "Skipped — original file kept"
         job["progress"] = 100.0
         job["stage_percent"] = 100.0
-        job["elapsed_seconds"] = int(time.time() - start_time)
+        job["elapsed_seconds"] = int(self._active_clock() - start_time)
         job["completed_at"] = time.time()
         job["error"] = None
         job["skip_reason"] = reason
@@ -1369,7 +1370,7 @@ class QueueManager:
         job["status"] = status
         job["stage"] = f"{'Cancelled' if cancelled else 'Error'}: {error}"
         job["error"] = error
-        job["elapsed_seconds"] = int(time.time() - start_time)
+        job["elapsed_seconds"] = int(self._active_clock() - start_time)
         job["completed_at"] = time.time()
         job["pid"] = None
         logs = job.setdefault("logs", [])
@@ -1698,7 +1699,7 @@ class QueueManager:
         encode_temp_dir = job_temp_dir / "encode"
         encode_temp_dir.mkdir(parents=True, exist_ok=True)
 
-        start_time = time.time()
+        start_time = self._active_clock()  # elapsed counts only unpaused time
         job_paused_at_start = self._paused_seconds()  # pauses before this job don't count
         job["status"] = JobStatus.EXTRACTING
         job["stage"] = "Probing Audio & HDR/DoVi Metadata"
@@ -1717,7 +1718,7 @@ class QueueManager:
                 # Skip if a real progress event landed in the last ~0.9s (same elapsed clock)
                 if time.monotonic() - last_progress_emit[0] < 0.9:
                     return
-                job["elapsed_seconds"] = int(time.time() - start_time)
+                job["elapsed_seconds"] = int(self._active_clock() - start_time)
                 self.emit_event("job_progress", self._progress_payload(job, **(extra or {})))
 
         def elapsed_ticker():
@@ -1808,7 +1809,7 @@ class QueueManager:
                         job["logs"].pop(0)
                     if update_stage:
                         job["stage"] = msg  # stage text stays unstamped
-                    job["elapsed_seconds"] = int(time.time() - start_time)
+                    job["elapsed_seconds"] = int(self._active_clock() - start_time)
                     last_progress_emit[0] = time.monotonic()
                     self.emit_event("job_progress", self._progress_payload(job, log=line))
 
@@ -2042,7 +2043,7 @@ class QueueManager:
                     if data.get("fps") is not None:
                         job["fps"] = data["fps"]
 
-                    job["elapsed_seconds"] = int(time.time() - start_time)
+                    job["elapsed_seconds"] = int(self._active_clock() - start_time)
                     last_progress_emit[0] = time.monotonic()
                     self.emit_event("job_progress", self._progress_payload(job, log=raw))
 
@@ -2188,7 +2189,7 @@ class QueueManager:
             job["status"] = JobStatus.COMPLETED
             job["stage"] = "Encode Completed"
             job["progress"] = 100.0
-            job["elapsed_seconds"] = int(time.time() - start_time)
+            job["elapsed_seconds"] = int(self._active_clock() - start_time)
             job["completed_at"] = time.time()
             job["error"] = None
             job["stats"] = {
@@ -2231,7 +2232,7 @@ class QueueManager:
                 res_bits.append(f"{final_size * 8 / out_duration / 1e6:.2f} Mb/s overall")
             paused_s = self._paused_seconds() - job_paused_at_start
             res_bits.append(
-                f"total {_fmt_duration(max(0.0, time.time() - start_time - paused_s))}"
+                f"total {_fmt_duration(max(0.0, self._active_clock() - start_time))}"
                 + (f" (+{_fmt_duration(paused_s)} paused)" if paused_s >= 1 else "")
             )
             append_log(" · ".join(res_bits), update_stage=False)
@@ -2394,7 +2395,7 @@ class QueueManager:
         finally:
             self._job_log = None
             stop_elapsed.set()
-            job["elapsed_seconds"] = int(time.time() - start_time)
+            job["elapsed_seconds"] = int(self._active_clock() - start_time)
             self.current_job_id = None
             # Always clean job temp (success path also calls cleanup — idempotent)
             try:
