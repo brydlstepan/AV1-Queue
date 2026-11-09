@@ -15,7 +15,6 @@
     "noise-size": 5,
     "noise-adaptive-filtering": 0,
     "enable-dlf": 2,
-    "variance-boost-strength": 3,
     "qp-scale-compress-strength": 3,
     "ac-bias": 1.5,
     "complex-hvs": 1,
@@ -26,6 +25,7 @@
     "qm-min": 4,
     "qm-max": 14,
     "tf-strength": 2,
+    "luminance-qp-bias": 25,
     "tune": 0
   },
   "nlmeans_tune": "none",

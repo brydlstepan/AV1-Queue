@@ -22,6 +22,9 @@
     "enable-cdef": 1,
     "enable-restoration": 0,
     "qm-max": 14,
+    "luminance-qp-bias": 25,
     "tune": 0
-  }
+  },
+  "nlmeans_tune": "none",
+  "nlmeans": "off"
 }

@@ -24,6 +24,9 @@
     "qm-min": 4,
     "qm-max": 14,
     "tf-strength": 2,
+    "luminance-qp-bias": 25,
     "tune": 0
-  }
+  },
+  "nlmeans_tune": "none",
+  "nlmeans": "off"
 }
