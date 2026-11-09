@@ -471,7 +471,7 @@ async def open_in_explorer(req: OpenPathRequest):
 
 @app.get("/")
 async def get_index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=NO_CACHE)
 
 
 @app.get("/api/queue")
@@ -822,5 +822,17 @@ async def websocket_endpoint(websocket: WebSocket):
             active_websockets.remove(websocket)
 
 
+# UI files change with every pull; make the browser revalidate (cheap 304 via ETag)
+# instead of reusing a stale cached app.js / style.css.
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
+class RevalidatingStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(NO_CACHE)
+        return response
+
+
 # Mount static assets
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", RevalidatingStaticFiles(directory=STATIC_DIR), name="static")
