@@ -205,7 +205,6 @@ class ActionRequest(BaseModel):
 class PresetModel(BaseModel):
     id: str
     name: str
-    description: Optional[str] = ""
     crf: float
     preset: int
     resolution_target: Optional[str] = "source"
@@ -214,10 +213,6 @@ class PresetModel(BaseModel):
     nlmeans_tune: Optional[str] = "none"
     audio_bitrate_51: str
     audio_bitrate_stereo: str
-    # Preferred audio languages in priority order (ISO-ish codes: eng, ces, …)
-    audio_languages: Optional[List[str]] = None
-    # If true, auto-select only the best track when a language has multiples
-    audio_best_only: Optional[bool] = True
     # Non-default SVT-AV1-Tritium overrides → HandBrake -x encoder options
     svt_params: Optional[Dict[str, Any]] = None
 

@@ -2518,11 +2518,9 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const existing = (allPresets || []).find(p => p.id === (pEditId.value || ""));
     const payload = {
       id: pEditId.value || ("preset_" + Date.now()),
       name: name,
-      description: (existing && existing.description) ? existing.description : "",
       crf: Math.round(Math.min(70, Math.max(1, Number(pEditCrf.value) || 35))),
       preset: Math.round(Math.min(10, Math.max(-3, Number(pEditPreset.value) || 4))),
       resolution_target: pEditResolution.value || "source",
