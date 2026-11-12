@@ -729,6 +729,54 @@ Default: None</span>
                   </button>
                 </div>
               </div>
+              <div class="setting-row is-default" data-pipeline-key="autoPauseLock">
+                <label class="setting-label" for="globalAutoPauseLock">
+                  <span class="setting-label-text">Auto-run while PC is locked</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Auto pause / resume for a running queue (it never presses Start). The queue runs while any auto condition that's on holds — PC locked, or other apps' CPU below the threshold — and is auto-paused when none does. With only this on: pause on unlock, resume ~10 s after locking. A Pause you press is never auto-resumed; a Resume you press during an auto-pause holds until the condition clears once (e.g. you lock and unlock again).</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAutoPauseLock" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalAutoPauseLock" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="autoPauseCpu">
+                <label class="setting-label" for="globalAutoPauseCpu">
+                  <span class="setting-label-text">Auto-run while other apps are idle</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Pause when other programs' CPU (the encoder and this server excluded) averages at or above the threshold for 60 s; resume once it averages below it for 2 min. With PC-locked also on, a locked PC keeps the queue running regardless of CPU. Note: the encoder runs at above-normal priority, so while it runs other apps get less CPU than they'd like — a heavy app may read lower than it would on an idle PC.</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAutoPauseCpu" title="Reset to default (Off)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <button type="button" class="svt-toggle pipeline-toggle" id="globalAutoPauseCpu" role="switch" aria-checked="false" data-default="false">
+                    <span class="svt-toggle-track" aria-hidden="true"><span class="svt-toggle-thumb"></span></span>
+                    <span class="svt-toggle-label">Off</span>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row is-default" data-pipeline-key="autoPauseCpuThreshold">
+                <label class="setting-label" for="globalAutoPauseCpuThreshold">
+                  <span class="setting-label-text">Other apps' CPU threshold (%)</span>
+                  <span class="setting-help" tabindex="0" aria-label="Help">
+                    <span class="setting-help-icon">?</span>
+                    <span class="setting-help-tip" role="tooltip">Share of total CPU other programs may use before the queue auto-pauses (when "Auto-run while other apps are idle" is on).</span>
+                  </span>
+                </label>
+                <button type="button" class="btn-reset-default pipeline-reset" data-target="globalAutoPauseCpuThreshold" title="Reset to default (50)" aria-label="Reset to default">↺</button>
+                <div class="setting-control">
+                  <div class="svt-slider-wrap">
+                    <input type="range" id="globalAutoPauseCpuThreshold" class="pipeline-field svt-slider" data-default="50" min="5" max="95" step="5">
+                    <span class="svt-slider-val" id="globalAutoPauseCpuThreshold_val">50</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 

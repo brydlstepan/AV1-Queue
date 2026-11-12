@@ -11,6 +11,7 @@ A local Windows AV1 encoding queue with a browser UI, for preparing a Jellyfin l
 ## Features
 
 - Queue movies and shows from the built-in file browser or a watch folder, then reorder, edit, pause, and retry jobs.
+- Pause the queue automatically while you use the PC and resume it when the PC is locked or other apps go quiet.
 - Encode to AV1 in a single pass with [HandBrakeCLI built with SVT-AV1-Tritium](https://github.com/Uranite/HandBrake-SVT-AV1-Tritium), using shareable presets, to MP4 or WebM.
 - Keep HDR10, HLG, HDR10+, and Dolby Vision where the source allows it. Sources that can't be encoded safely are skipped or quarantined, never damaged.
 - Choose audio and subtitle tracks per job, with Opus or E-AC-3 audio and text subtitle sidecars.

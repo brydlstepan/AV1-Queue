@@ -37,6 +37,7 @@ from core.presets_store import (
 )
 from core.handbrake_encode import handbrake_available
 from core.watch_folder import WatchFolderService
+from core.auto_pause import AutoPauseMonitor
 
 # Connected WebSocket clients
 active_websockets: List[WebSocket] = []
@@ -57,7 +58,10 @@ async def lifespan(app: FastAPI):
     if not handbrake_available():
         print("[!] bin/handbrake/HandBrakeCLI.exe is missing — run setup.bat; encodes will fail until it's installed")
     _restart_watch_service()
+    auto_pause = AutoPauseMonitor(queue_mgr, load_settings)
+    auto_pause.start()
     yield
+    auto_pause.stop()
     global _watch_service
     if _watch_service is not None:
         _watch_service.stop()
@@ -248,6 +252,9 @@ class SettingsUpdateRequest(BaseModel):
     watch_folder_default_preset: Optional[str] = None
     hour_format: Optional[str] = None
     allow_builtin_preset_edits: Optional[bool] = None
+    auto_pause_lock: Optional[bool] = None
+    auto_pause_cpu: Optional[bool] = None
+    auto_pause_cpu_threshold: Optional[int] = None
     # Secret keys (SECRET_SETTINGS) to remove — a blank secret means "keep"
     clear_secrets: Optional[List[str]] = None
     # Pipeline + Test Mode settings (merged, validated in core/app_settings.py).
@@ -474,6 +481,7 @@ async def get_queue():
     return {
         "is_running": queue_mgr.is_running,
         "is_paused": queue_mgr.is_paused,
+        "auto_pause_reason": queue_mgr.auto_pause_reason,
         "current_job_id": queue_mgr.current_job_id,
         "jobs": queue_mgr.jobs
     }
@@ -576,10 +584,12 @@ async def queue_action(req: ActionRequest):
             "updated": len(updated),
             "is_running": queue_mgr.is_running,
             "is_paused": queue_mgr.is_paused,
+            "auto_pause_reason": queue_mgr.auto_pause_reason,
         }
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action {act}")
-    return {"status": "ok", "is_running": queue_mgr.is_running, "is_paused": queue_mgr.is_paused}
+    return {"status": "ok", "is_running": queue_mgr.is_running, "is_paused": queue_mgr.is_paused,
+            "auto_pause_reason": queue_mgr.auto_pause_reason}
 
 
 @app.get("/api/probe")
@@ -715,6 +725,8 @@ async def update_settings(req: SettingsUpdateRequest):
         if fmt not in ("12", "24"):
             raise HTTPException(status_code=400, detail="hour_format must be '12' or '24'")
         updates["hour_format"] = fmt
+    if "auto_pause_cpu_threshold" in updates and not 5 <= updates["auto_pause_cpu_threshold"] <= 95:
+        raise HTTPException(status_code=400, detail="auto_pause_cpu_threshold must be 5–95")
     try:
         data = save_settings(updates)
     except Exception as e:
@@ -803,6 +815,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "data": {
                 "is_running": queue_mgr.is_running,
                 "is_paused": queue_mgr.is_paused,
+                "auto_pause_reason": queue_mgr.auto_pause_reason,
                 "current_job_id": queue_mgr.current_job_id,
                 "jobs": queue_mgr.jobs
             }

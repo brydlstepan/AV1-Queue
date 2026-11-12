@@ -387,6 +387,11 @@ class QueueManager:
         self._pause_clock_lock = threading.Lock()
         self._paused_total = 0.0
         self._paused_since: Optional[float] = None
+        # Auto pause (core/auto_pause.py): why the queue is auto-paused (None =
+        # not paused, or paused by hand), and whether a manual Resume during an
+        # auto-pause is holding further auto-pauses off until the condition clears
+        self.auto_pause_reason: Optional[str] = None
+        self.auto_pause_overridden = False
         self.load_queue()
         self._recover_interrupted_jobs()
         # An Edit Job IMDb → TMDB lookup cut off by a restart: run it again
@@ -1093,6 +1098,8 @@ class QueueManager:
                 return
             self.is_running = True
             self.is_paused = False
+            self.auto_pause_reason = None
+            self.auto_pause_overridden = False
             self._end_pause_clock()
             self._cancel_event.clear()
 
@@ -1153,26 +1160,41 @@ class QueueManager:
             except Exception:
                 pass
 
-    def pause_queue(self):
+    def pause_queue(self, auto: Optional[str] = None):
+        """Pause. `auto` is the auto-pause reason; None means the user paused
+        (a manual pause is never auto-resumed)."""
         if not self.is_paused:
-            self._log_to_current_job("Paused")
+            self._log_to_current_job(f"Auto-paused: {auto}" if auto else "Paused")
             with self._pause_clock_lock:
                 if self._paused_since is None:
                     self._paused_since = time.monotonic()
+        if auto:
+            print(f"[auto-pause] Paused: {auto}")
+        self.auto_pause_reason = auto
         self.is_paused = True
         self.pipeline.suspend_current_process()
-        self.emit_event("queue_paused", {})
+        self.emit_event("queue_paused", {"auto_pause_reason": auto})
 
-    def resume_queue(self):
+    def resume_queue(self, auto: Optional[str] = None):
+        """Resume. `auto` is the auto-resume reason; None means the user resumed,
+        which holds off auto-pause until its condition clears."""
+        if not auto and self.auto_pause_reason:
+            self.auto_pause_overridden = True
         if self.is_paused:
             paused_for = self._end_pause_clock()
-            self._log_to_current_job(f"Resumed (paused {_fmt_duration(paused_for)})")
+            what = f"Auto-resumed ({auto})" if auto else "Resumed"
+            self._log_to_current_job(f"{what} (paused {_fmt_duration(paused_for)})")
+            if auto:
+                print(f"[auto-pause] Resumed: {auto}")
+        self.auto_pause_reason = None
         self.is_paused = False
         self.pipeline.resume_current_process()
         self.emit_event("queue_resumed", {})
 
     def stop_queue(self):
         self._end_pause_clock()  # Stop while paused must not leave the clock frozen
+        self.auto_pause_reason = None
+        self.auto_pause_overridden = False
         self.is_running = False
         self.current_job_id = None
         self._cancel_event.set()

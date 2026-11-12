@@ -1004,6 +1004,10 @@ document.addEventListener("DOMContentLoaded", () => {
   if (globalSsimu2Target) {
     globalSsimu2Target.addEventListener("input", () => syncPipelineFieldRow(globalSsimu2Target));
   }
+  const globalAutoPauseThr = document.getElementById("globalAutoPauseCpuThreshold");
+  if (globalAutoPauseThr) {
+    globalAutoPauseThr.addEventListener("input", () => syncPipelineFieldRow(globalAutoPauseThr));
+  }
 
   const pipelineSettingsModal = document.getElementById("pipelineSettingsModal");
   const btnPipelineSettings = document.getElementById("btnPipelineSettings");
@@ -1042,7 +1046,10 @@ document.addEventListener("DOMContentLoaded", () => {
     watch_folder_output_path: "",
     watch_folder_default_preset: "",
     hour_format: "24",
-    allow_builtin_preset_edits: false
+    allow_builtin_preset_edits: false,
+    auto_pause_lock: false,
+    auto_pause_cpu: false,
+    auto_pause_cpu_threshold: 50
   };
   let pendingSecretClears = new Set();  // secret keys the user clicked Clear on (sent on Save)
   let pipelineSettingsSnapshot = null;
@@ -1202,6 +1209,19 @@ document.addEventListener("DOMContentLoaded", () => {
     if (watchAutostart) {
       setPipelineToggle(watchAutostart, !!appSettings.watch_folder_autostart);
       syncPipelineFieldRow(watchAutostart);
+    }
+    for (const [id, key] of [["globalAutoPauseLock", "auto_pause_lock"], ["globalAutoPauseCpu", "auto_pause_cpu"]]) {
+      const el = document.getElementById(id);
+      if (el) {
+        setPipelineToggle(el, !!appSettings[key]);
+        syncPipelineFieldRow(el);
+      }
+    }
+    const autoPauseThr = document.getElementById("globalAutoPauseCpuThreshold");
+    if (autoPauseThr) {
+      const n = Number(appSettings.auto_pause_cpu_threshold);
+      autoPauseThr.value = String(Number.isFinite(n) && n >= 5 && n <= 95 ? n : 50);
+      syncPipelineFieldRow(autoPauseThr);
     }
     const watchPath = document.getElementById("settingsWatchFolderPath");
     if (watchPath) watchPath.value = appSettings.watch_folder_path || "";
@@ -1378,6 +1398,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const ssimu2TargetEl = document.getElementById("globalSsimu2Target");
     let ssimu2Target = Number(ssimu2TargetEl?.value ?? appSettings.ssimu2_target ?? 80);
     if (!Number.isFinite(ssimu2Target) || ssimu2Target < 0 || ssimu2Target > 100) ssimu2Target = 80;
+    let autoPauseThr = Number(document.getElementById("globalAutoPauseCpuThreshold")?.value ?? appSettings.auto_pause_cpu_threshold ?? 50);
+    if (!Number.isFinite(autoPauseThr) || autoPauseThr < 5 || autoPauseThr > 95) autoPauseThr = 50;
     const movieTpl = stripExtToken(
       (document.getElementById("globalNameTemplateMovie")?.value || "").trim()
       || DEFAULT_NAME_TEMPLATE_MOVIE
@@ -1404,7 +1426,10 @@ document.addEventListener("DOMContentLoaded", () => {
       watch_folder_output_path: (document.getElementById("settingsWatchFolderOutputPath")?.value || "").trim(),
       watch_folder_default_preset: document.getElementById("settingsWatchFolderPreset")?.value || "",
       hour_format: getHourFormat(),
-      allow_builtin_preset_edits: toggleOn("globalAllowBuiltinPresetEdits")
+      allow_builtin_preset_edits: toggleOn("globalAllowBuiltinPresetEdits"),
+      auto_pause_lock: toggleOn("globalAutoPauseLock"),
+      auto_pause_cpu: toggleOn("globalAutoPauseCpu"),
+      auto_pause_cpu_threshold: autoPauseThr
     };
   }
 
@@ -1586,6 +1611,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   wireSettingsToggle(document.getElementById("globalWatchFolderAutostart"));
   wireSettingsToggle(document.getElementById("globalAllowBuiltinPresetEdits"));
+  wireSettingsToggle(document.getElementById("globalAutoPauseLock"));
+  wireSettingsToggle(document.getElementById("globalAutoPauseCpu"));
 
   const globalSvtLp = document.getElementById("globalSvtLp");
   if (globalSvtLp) {
@@ -2614,6 +2641,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event === "initial_state") {
       queueState.isRunning = data.is_running;
       queueState.isPaused = data.is_paused;
+      queueState.autoPauseReason = data.auto_pause_reason || null;
       queueState.currentJobId = data.current_job_id;
       queueState.jobs = data.jobs || [];
       renderQueue();
@@ -2680,9 +2708,11 @@ document.addEventListener("DOMContentLoaded", () => {
       renderQueueControls();
     } else if (event === "queue_paused") {
       queueState.isPaused = true;
+      queueState.autoPauseReason = data?.auto_pause_reason || null;
       renderQueueControls();
     } else if (event === "queue_resumed") {
       queueState.isPaused = false;
+      queueState.autoPauseReason = null;
       renderQueueControls();
     } else if (event === "queue_reordered") {
       if (Array.isArray(data?.job_ids) && data.job_ids.length) {
@@ -2710,7 +2740,9 @@ document.addEventListener("DOMContentLoaded", () => {
       btnStartQueue.classList.add("hidden");
       btnPauseQueue.classList.remove("hidden");
       btnStopQueue.classList.remove("hidden");
-      btnPauseQueue.textContent = queueState.isPaused ? "▶ Resume" : "⏸ Pause";
+      const autoReason = queueState.isPaused && queueState.autoPauseReason;
+      btnPauseQueue.textContent = queueState.isPaused ? (autoReason ? "▶ Resume (auto-paused)" : "▶ Resume") : "⏸ Pause";
+      btnPauseQueue.title = autoReason ? `Auto-paused: ${autoReason}` : "";
     } else {
       btnStartQueue.classList.remove("hidden");
       btnPauseQueue.classList.add("hidden");

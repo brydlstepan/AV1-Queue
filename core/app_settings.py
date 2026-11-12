@@ -50,6 +50,11 @@ _DEFAULTS: Dict[str, Any] = {
     "watch_folder_default_preset": "",
     "hour_format": "24",
     "allow_builtin_preset_edits": False,
+    # Auto pause / resume (core/auto_pause.py): the queue runs while the PC is
+    # locked OR other apps' CPU is below the threshold (each one a toggle)
+    "auto_pause_lock": False,
+    "auto_pause_cpu": False,
+    "auto_pause_cpu_threshold": 50,
     # Pipeline + Test Mode settings (see PIPELINE_KEYS). Empty until the UI has
     # saved them once; queue jobs then follow these instead of a snapshot.
     "pipeline": {},
