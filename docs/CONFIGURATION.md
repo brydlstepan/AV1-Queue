@@ -4,7 +4,7 @@ What you can change: launcher settings in a `.env` file, and everything else in 
 
 ## Launching
 
-Starts the server as a background process with a **system tray icon** — no console window, not shown on the taskbar. Right-click the tray icon for Open Studio / Start Queue / Pause/Resume Queue / View Log / **Open Live Log Console** / Stop Server. On first launch it opens **http://localhost:8765** in your browser automatically; if the server is already running, it just reuses it. Binds to **127.0.0.1** only. Server output goes to `logs/server.log`; **View Log** opens a static snapshot in Notepad, **Open Live Log Console** opens a console window that tails it in real time.
+Starts the server as a background process with a **system tray icon** — no console window, not shown on the taskbar. Right-click the tray icon for Open Studio / Start Queue / Pause/Resume Queue / View Log / **Open Live Log Console** / Stop Server. On first launch it opens **http://localhost:8765** in your browser automatically. Running it again while the tray is up only opens the studio — no second tray or server (one tray per port); if the server is already running without a tray, it reuses that server. Binds to **127.0.0.1** only. Server output goes to `logs/server.log`; **View Log** opens a static snapshot in Notepad, **Open Live Log Console** opens a console window that tails it in real time.
 
 Or run it in the foreground with a visible console (for debugging — live log output, Ctrl+C to stop):
 

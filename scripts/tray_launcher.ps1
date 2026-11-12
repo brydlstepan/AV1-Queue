@@ -241,6 +241,20 @@ try {
     try { $startMutex.Dispose() } catch {}
 }
 
+# One tray per port: a tray already running (it holds this mutex for its whole
+# life) keeps managing the server, so a repeat runGUI.bat only opens the studio.
+$trayMutex = New-Object System.Threading.Mutex($false, "Local\AV1QueueTray_$StudioPort")
+$trayOwner = $false
+try {
+    $trayOwner = $trayMutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+    $trayOwner = $true  # the previous tray died without releasing it
+}
+if (-not $trayOwner) {
+    Open-Studio
+    exit 0
+}
+
 $icon = [System.Drawing.SystemIcons]::Application
 $trayIcon = New-Object System.Windows.Forms.NotifyIcon
 $trayIcon.Icon = $icon
